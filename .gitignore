@@ -3,3 +3,13 @@ node_modules/
 .vscode-test/
 *.vsix
 scratch/
+*.log
+*.tmp
+.env
+.env.*
+*.token
+*.key
+*.pem
+accounts/
+.antigravity_cockpit/
+.antigravity_tools/
