@@ -25,6 +25,7 @@ import { ModelGroupManager } from './modelGroupManager';
 import { SwitcherProxy } from './switcherProxy';
 import { t } from './i18n';
 import { AutoClickManager } from './autoClickManager';
+import { UpdateManager } from './updateManager';
 
 /**
  * 计算字符串在等宽字体下的视觉宽度
@@ -49,6 +50,9 @@ function getVisualWidth(str: string): number {
 export function activate(context: vscode.ExtensionContext) {
     // 🚀 Activate Auto Click & Scroll Manager
     AutoClickManager.activate(context);
+
+    // 🚀 Activate Automatic Updates from GitHub
+    UpdateManager.init(context);
 
     // 🔄 配置目录迁移：从旧路径 ~/.antigravity_tools 复制到 ~/.antigravity_cockpit
     migrateDataDir();
@@ -1762,4 +1766,5 @@ async function getUserInfo(accessToken: string): Promise<any> {
 
 export function deactivate() {
     AutoClickManager.deactivate();
+    UpdateManager.dispose();
 }

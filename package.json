@@ -61,6 +61,11 @@
         "icon": "$(key)"
       },
       {
+        "command": "antigravity-cockpit.checkForUpdates",
+        "title": "Antigravity: Kiểm tra cập nhật Extension",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "antigravity-cockpit.exportToken",
         "title": "Antigravity: Xuất Refresh Token",
         "icon": "$(export)"
