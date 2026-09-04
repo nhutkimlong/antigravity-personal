@@ -1,0 +1,19 @@
+{
+    "extension.description": "Tiện ích Antigravity cá nhân: Quản lý đa tài khoản Google & Quota Model, kết hợp Tự động Accept và Cuộn chat",
+    "command.refreshAccounts": "Antigravity: Làm mới danh sách tài khoản",
+    "command.switchAccount": "Antigravity: Chuyển đổi tài khoản",
+    "command.refreshAccount": "Antigravity: Làm mới tài khoản này",
+    "command.refreshAllAccounts": "Antigravity: Làm mới tất cả tài khoản",
+    "command.openDashboard": "Antigravity: Mở Bảng điều khiển Quản lý Tài khoản (Dashboard)",
+    "command.addAccount": "Antigravity: Thêm tài khoản Google",
+    "command.openSwitchLogs": "Antigravity: Mở thư mục Log Chuyển đổi",
+    "command.diagnoseEnvironment": "Antigravity: Chẩn đoán Môi trường",
+    "config.autoRefreshInterval.description": "Khoảng thời gian (phút) tự động làm mới thông tin hạn mức quota tài khoản. Đặt 0 để tắt tự động làm mới.",
+    "config.switchMode.description": "Chế độ chuyển đổi tài khoản: 'safe' chỉ chuyển tài khoản trong tiện ích và yêu cầu khởi động lại IDE thủ công; 'advanced' gọi tiến trình proxy để Đóng IDE → Nạp Token vào DB → Tự động khởi động lại IDE.",
+    "config.databasePathOverride.description": "Đường dẫn tùy chỉnh file SQLite state.vscdb của Antigravity IDE (để trống để dùng mặc định).",
+    "config.antigravityExecutablePath.win32.description": "Đường dẫn tùy chỉnh Antigravity.exe trên Windows (để trống để dùng mặc định LOCALAPPDATA\\Programs\\Antigravity\\Antigravity.exe)",
+    "config.antigravityExecutablePath.darwin.description": "Đường dẫn tùy chỉnh Antigravity.app trên macOS (để trống để dùng mặc định /Applications/Antigravity.app)",
+    "config.antigravityExecutablePath.linux.description": "Đường dẫn tùy chỉnh Antigravity executable trên Linux (để trống để tự động dò tìm)",
+    "config.processWaitSeconds.description": "Thời gian chờ (giây) khi đóng/mở lại tiến trình trong quá trình chuyển đổi tài khoản.",
+    "config.language.description": "Ngôn ngữ giao diện: 'vi' cho Tiếng Việt (mặc định), 'auto' theo cài đặt VS Code, 'en' cho Tiếng Anh."
+}

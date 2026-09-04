@@ -1,0 +1,265 @@
+{
+  "name": "antigravity-personal",
+  "displayName": "Antigravity Personal Extension",
+  "description": "Personal extension for Google Antigravity: Multi-account model manager with Auto-Accept & Auto-Scroll",
+  "version": "1.0.0",
+  "publisher": "Personal",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nhutkimlong/antigravity-personal.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "antigravity-cockpit.refreshAccounts",
+        "title": "%command.refreshAccounts%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "antigravity-cockpit.switchAccount",
+        "title": "%command.switchAccount%"
+      },
+      {
+        "command": "antigravity-cockpit.refreshAccount",
+        "title": "%command.refreshAccount%"
+      },
+      {
+        "command": "antigravity-cockpit.refreshAllAccounts",
+        "title": "%command.refreshAllAccounts%"
+      },
+      {
+        "command": "antigravity-cockpit.openDashboard",
+        "title": "%command.openDashboard%"
+      },
+      {
+        "command": "antigravity-cockpit.addAccount",
+        "title": "%command.addAccount%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "antigravity-cockpit.openSwitchLogs",
+        "title": "%command.openSwitchLogs%"
+      },
+      {
+        "command": "antigravity-cockpit.diagnoseEnvironment",
+        "title": "%command.diagnoseEnvironment%"
+      },
+      {
+        "command": "antigravity-cockpit.loginWithToken",
+        "title": "Antigravity: Đăng nhập bằng Refresh Token",
+        "icon": "$(key)"
+      },
+      {
+        "command": "antigravity-cockpit.exportToken",
+        "title": "Antigravity: Xuất Refresh Token",
+        "icon": "$(export)"
+      },
+      {
+        "command": "antigravity-cockpit.batchExportTokens",
+        "title": "Antigravity: Xuất toàn bộ Token hàng loạt",
+        "icon": "$(export)"
+      },
+      {
+        "command": "antigravity-cockpit.batchImportTokens",
+        "title": "Antigravity: Nhập Token hàng loạt",
+        "icon": "$(import)"
+      },
+      {
+        "command": "ag-auto.enable",
+        "title": "AG Auto: Bật Auto Click & Scroll (Chèn Script)"
+      },
+      {
+        "command": "ag-auto.disable",
+        "title": "AG Auto: Tắt Auto Click & Scroll (Gỡ Script)"
+      },
+      {
+        "command": "ag-auto.openSettings",
+        "title": "AG Auto: Mở Bảng Cài Đặt"
+      },
+      {
+        "command": "ag-auto.toggleAccept",
+        "title": "AG Auto: Bật/Tắt Tự Động Chấp Thuận (Auto Accept)"
+      },
+      {
+        "command": "ag-auto.toggleScroll",
+        "title": "AG Auto: Bật/Tắt Tự Động Cuộn Khung Chat (Auto Scroll)"
+      }
+    ],
+    "configuration": [
+      {
+        "title": "Antigravity Multi-Account Cockpit",
+        "properties": {
+          "antigravity-cockpit.autoRefreshInterval": {
+            "type": "integer",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 60,
+            "description": "%config.autoRefreshInterval.description%"
+          },
+          "antigravity-cockpit.switchMode": {
+            "type": "string",
+            "enum": [
+              "safe",
+              "advanced"
+            ],
+            "default": "advanced",
+            "description": "%config.switchMode.description%"
+          },
+          "antigravity-cockpit.databasePathOverride": {
+            "type": "string",
+            "default": "",
+            "description": "%config.databasePathOverride.description%"
+          },
+          "antigravity-cockpit.antigravityExecutablePath": {
+            "type": "object",
+            "properties": {
+              "win32": {
+                "type": "string",
+                "default": "",
+                "description": "%config.antigravityExecutablePath.win32.description%"
+              },
+              "darwin": {
+                "type": "string",
+                "default": "",
+                "description": "%config.antigravityExecutablePath.darwin.description%"
+              },
+              "linux": {
+                "type": "string",
+                "default": "",
+                "description": "%config.antigravityExecutablePath.linux.description%"
+              }
+            }
+          },
+          "antigravity-cockpit.processWaitSeconds": {
+            "type": "integer",
+            "default": 10,
+            "minimum": 5,
+            "maximum": 60,
+            "description": "%config.processWaitSeconds.description%"
+          },
+          "antigravity-cockpit.language": {
+            "type": "string",
+            "enum": [
+              "vi",
+              "auto",
+              "en",
+              "zh-cn",
+              "zh-tw",
+              "ja",
+              "ko",
+              "ru",
+              "fr",
+              "es",
+              "de",
+              "it"
+            ],
+            "default": "vi",
+            "description": "Ngôn ngữ hiển thị giao diện: 'vi' cho Tiếng Việt (mặc định), 'auto' theo cài đặt VS Code, 'en' cho Tiếng Anh..."
+          }
+        }
+      },
+      {
+        "title": "AG Auto Click & Scroll",
+        "properties": {
+          "ag-auto.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Bật/tắt Auto Click & Scroll"
+          },
+          "ag-auto.scrollEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Bật/tắt Auto Scroll"
+          },
+          "ag-auto.language": {
+            "type": "string",
+            "enum": [
+              "vi",
+              "en",
+              "zh"
+            ],
+            "enumDescriptions": [
+              "Tiếng Việt",
+              "English",
+              "中文"
+            ],
+            "default": "vi",
+            "description": "Ngôn ngữ hiển thị trong giao diện Settings"
+          },
+          "ag-auto.scrollPauseMs": {
+            "type": "number",
+            "default": 7000,
+            "description": "Thời gian nghỉ khi người dùng cuộn tay (ms)"
+          },
+          "ag-auto.scrollIntervalMs": {
+            "type": "number",
+            "default": 500,
+            "description": "Tốc độ quét cuộn tự động (ms)"
+          },
+          "ag-auto.clickIntervalMs": {
+            "type": "number",
+            "default": 1000,
+            "description": "Tốc độ quét nút click (ms)"
+          },
+          "ag-auto.clickPatterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "Allow",
+              "Always Allow",
+              "Run",
+              "Run in Terminal",
+              "Keep Waiting",
+              "Accept",
+              "Accept all",
+              "Continue",
+              "Retry",
+              "Allow Once",
+              "Cho phép",
+              "Luôn cho phép",
+              "Chạy",
+              "Tiếp tục",
+              "Thử lại"
+            ],
+            "description": "Danh sách text nút tự động click (hỗ trợ cả Tiếng Anh và Tiếng Việt)"
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "diagnose:vscdb": "node ./scripts/diagnose_vscdb_account_keys.js",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^5.59.8",
+    "@typescript-eslint/parser": "^5.59.8",
+    "@vscode/vsce": "^2.19.0",
+    "eslint": "^8.41.0",
+    "typescript": "^5.1.3"
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "sql.js": "^1.14.1"
+  }
+}
