@@ -75,6 +75,15 @@ export class UpdateManager {
             vscode.window.setStatusBarMessage('🔄 Đang kiểm tra bản cập nhật Antigravity Personal...', 3000);
         }
 
+        const config = vscode.workspace.getConfiguration('antigravity-cockpit');
+        const customToken = config.get<string>('githubToken', '').trim();
+        const headers: Record<string, string> = {
+            'User-Agent': 'Antigravity-Personal-Updater'
+        };
+        if (customToken) {
+            headers['Authorization'] = `token ${customToken}`;
+        }
+
         try {
             let latestVersion = '';
             let downloadUrl = '';
@@ -83,7 +92,7 @@ export class UpdateManager {
             // 1. Thử lấy từ GitHub Releases API
             try {
                 const res = await axios.get(GITHUB_RELEASES_API, {
-                    headers: { 'User-Agent': 'Antigravity-Personal-Updater' },
+                    headers,
                     timeout: 8000
                 });
 
@@ -103,7 +112,7 @@ export class UpdateManager {
             if (!latestVersion) {
                 try {
                     const rawPkgRes = await axios.get(GITHUB_RAW_PACKAGE_JSON, {
-                        headers: { 'User-Agent': 'Antigravity-Personal-Updater' },
+                        headers,
                         timeout: 8000
                     });
                     if (rawPkgRes.status === 200 && rawPkgRes.data && rawPkgRes.data.version) {
@@ -115,7 +124,7 @@ export class UpdateManager {
 
             if (!latestVersion) {
                 if (isManual) {
-                    vscode.window.showInformationMessage('✅ Bạn đang sử dụng phiên bản mới nhất (v' + currentVersion + ')');
+                    vscode.window.showInformationMessage('✅ Bạn đang sử dụng phiên bản mới nhất (v' + currentVersion + ') hoặc repository cần đặt ở chế độ Public để tải release.');
                 }
                 return;
             }
