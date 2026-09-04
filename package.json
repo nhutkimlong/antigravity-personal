@@ -2,7 +2,7 @@
   "name": "antigravity-personal",
   "displayName": "Antigravity Personal Extension",
   "description": "Personal extension for Google Antigravity: Multi-account model manager with Auto-Accept & Auto-Scroll",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "Personal",
   "icon": "resources/icon.png",
   "repository": {
@@ -299,14 +299,21 @@
               "Keep Waiting",
               "Accept",
               "Accept all",
+              "Proceed",
               "Continue",
               "Retry",
               "Allow Once",
+              "Submit",
+              "Confirm",
               "Cho phép",
               "Luôn cho phép",
               "Chạy",
               "Tiếp tục",
-              "Thử lại"
+              "Thử lại",
+              "Chấp nhận",
+              "Chấp thuận",
+              "Đồng ý",
+              "Xác nhận"
             ],
             "description": "Danh sách text nút tự động click (hỗ trợ cả Tiếng Anh và Tiếng Việt)"
           }

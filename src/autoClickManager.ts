@@ -104,12 +104,7 @@ export class AutoClickManager {
     private static _autoAcceptInterval: NodeJS.Timeout | null = null;
     private static CHAT_ACCEPT_COMMANDS = [
         'antigravity.agent.acceptAgentStep',
-        'antigravity.prioritized.supercompleteAccept',
-        'antigravity.terminalCommand.accept',
-        'antigravity.acceptCompletion',
-        'workbench.action.chat.acceptInput',
-        'interactive.acceptChanges',
-        'chat.action.accept'
+        'antigravity.terminalCommand.accept'
     ];
 
     public static activate(context: vscode.ExtensionContext): void {
@@ -121,8 +116,8 @@ export class AutoClickManager {
         this._httpScrollEnabled = cfg.get<boolean>('scrollEnabled', true);
         const configPatterns = cfg.get<string[]>('clickPatterns', [
             'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
-            'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
-            'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý'
+            'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry', 'Submit', 'Confirm',
+            'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý', 'Xác nhận'
         ]);
         const disabledPatterns = context.globalState.get<string[]>('disabledClickPatterns', []);
         this._httpClickPatterns = configPatterns.filter(p => !disabledPatterns.includes(p));
@@ -221,8 +216,8 @@ if ($global:clicked) { Write-Output 'CLICKED' }
                     this._httpScrollEnabled = cfg.get<boolean>('scrollEnabled', true);
                     const configPatterns = cfg.get<string[]>('clickPatterns', [
                         'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
-                        'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
-                        'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý'
+                        'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry', 'Submit', 'Confirm',
+                        'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý', 'Xác nhận'
                     ]);
                     const disabledPatterns = context.globalState.get<string[]>('disabledClickPatterns', []);
                     this._httpClickPatterns = configPatterns.filter(p => !disabledPatterns.includes(p));
@@ -353,8 +348,12 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         ]);
         const disabledPats = context.globalState.get<string[]>('disabledClickPatterns', []);
         const patterns = allPatterns.filter(p => !disabledPats.includes(p));
-        const acceptEnabled = allPatterns.some(p => p.toLowerCase().includes('accept') || p.includes('Chấp')) && !disabledPats.includes('Accept');
+        const acceptEnabled = allPatterns.some(p => {
+            const pl = p.toLowerCase();
+            return (pl.includes('accept') || pl.includes('chấp') || pl.includes('đồng ý') || pl.includes('agree')) && !disabledPats.includes('Accept');
+        });
         const enabled = config.get<boolean>('enabled', true);
+        const scrollEnabled = config.get<boolean>('scrollEnabled', true);
 
         // Path to media/autoScript.js
         let templatePath = path.join(context.extensionPath, 'media', 'autoScript.js');
@@ -375,6 +374,7 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         );
         script = script.replace(/\/\*\{\{ACCEPT_IN_CHAT_ONLY\}\}\*\/\w+/, acceptEnabled.toString());
         script = script.replace(/\/\*\{\{ENABLED\}\}\*\/\w+/, enabled.toString());
+        script = script.replace(/\/\*\{\{SCROLL_ENABLED\}\}\*\/\w+/, scrollEnabled.toString());
         script = script.replace(/\/\*\{\{CONFIG_PATH\}\}\*\//, configFilePath);
 
         return script;
@@ -389,7 +389,10 @@ if ($global:clicked) { Write-Output 'CLICKED' }
             const allPatterns = config.get<string[]>('clickPatterns', ['Allow', 'Always Allow', 'Run', 'Keep Waiting', 'Accept']);
             const disabledPats = context.globalState.get<string[]>('disabledClickPatterns', []);
             const activePatterns = allPatterns.filter(p => !disabledPats.includes(p) && p !== 'Accept');
-            const acceptEnabled = allPatterns.includes('Accept') && !disabledPats.includes('Accept');
+            const acceptEnabled = allPatterns.some(p => {
+                const pl = p.toLowerCase();
+                return (pl.includes('accept') || pl.includes('chấp') || pl.includes('đồng ý') || pl.includes('agree')) && !disabledPats.includes(p);
+            });
             const enabled = config.get<boolean>('enabled', true);
             const configData = JSON.stringify({
                 enabled: enabled,
@@ -459,18 +462,25 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         }
 
         try {
-            let html = fs.readFileSync(wbPath, 'utf8');
-            const htmlRegex = new RegExp(`${escapeRegex(TAG_START)}[\\s\\S]*?${escapeRegex(TAG_END)}`, 'g');
-            html = html.replace(htmlRegex, '');
-
             const ts = Date.now();
             const destPath = path.join(wbDir, 'ag-auto-script.js');
             writeFileElevated(destPath, scriptContent);
 
             const injection = `\n${TAG_START}\n<script src="ag-auto-script.js?v=${ts}"></script>\n${TAG_END}`;
-            html = html.replace('</html>', injection + '\n</html>');
-
-            writeFileElevated(wbPath, html);
+            const targetHtmlNames = ['workbench.html', 'workbench-jetski-agent.html'];
+            for (const htmlName of targetHtmlNames) {
+                const targetHtmlPath = path.join(wbDir, htmlName);
+                if (!fs.existsSync(targetHtmlPath)) continue;
+                try {
+                    let html = fs.readFileSync(targetHtmlPath, 'utf8');
+                    const htmlRegex = new RegExp(`${escapeRegex(TAG_START)}[\\s\\S]*?${escapeRegex(TAG_END)}`, 'g');
+                    html = html.replace(htmlRegex, '');
+                    html = html.replace('</html>', injection + '\n</html>');
+                    writeFileElevated(targetHtmlPath, html);
+                } catch (htmlErr: any) {
+                    console.error(`[AG Auto] Error injecting into ${htmlName}:`, htmlErr.message);
+                }
+            }
         } catch (err: any) {
             console.error('[AG Auto] Error injecting into HTML:', err.message);
         }
@@ -702,10 +712,17 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         const JS_TAG_END = '/* AG-AUTO-CLICK-SCROLL-JS-END */';
 
         try {
-            let html = fs.readFileSync(wbPath, 'utf8');
-            const htmlRegex = new RegExp(`${escapeRegex(TAG_START)}[\\s\\S]*?${escapeRegex(TAG_END)}`, 'g');
-            html = html.replace(htmlRegex, '');
-            writeFileElevated(wbPath, html);
+            const targetHtmlNames = ['workbench.html', 'workbench-jetski-agent.html'];
+            for (const htmlName of targetHtmlNames) {
+                const targetHtmlPath = path.join(wbDir, htmlName);
+                if (!fs.existsSync(targetHtmlPath)) continue;
+                try {
+                    let html = fs.readFileSync(targetHtmlPath, 'utf8');
+                    const htmlRegex = new RegExp(`${escapeRegex(TAG_START)}[\\s\\S]*?${escapeRegex(TAG_END)}`, 'g');
+                    html = html.replace(htmlRegex, '');
+                    writeFileElevated(targetHtmlPath, html);
+                } catch (_) { }
+            }
 
             const scriptPath = path.join(wbDir, 'ag-auto-script.js');
             if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath);
@@ -818,8 +835,14 @@ if ($global:clicked) { Write-Output 'CLICKED' }
                 }
 
                 res.writeHead(200);
-                const safePatterns = this._httpClickPatterns.filter(p => p !== 'Accept');
-                const acceptEnabled = this._httpClickPatterns.includes('Accept');
+                const safePatterns = this._httpClickPatterns.filter(p => {
+                    const pl = p.toLowerCase();
+                    return pl !== 'accept' && !pl.startsWith('chấp') && !pl.startsWith('đồng ý');
+                });
+                const acceptEnabled = this._httpClickPatterns.some(p => {
+                    const pl = p.toLowerCase();
+                    return pl.includes('accept') || pl.includes('chấp') || pl.includes('đồng ý') || pl.includes('agree');
+                });
                 const response: any = {
                     enabled: this._autoAcceptEnabled,
                     scrollEnabled: this._httpScrollEnabled,

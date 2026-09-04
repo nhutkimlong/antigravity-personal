@@ -45,12 +45,12 @@
     var PAUSE_SCROLL_MS = /*{{PAUSE_SCROLL_MS}}*/7000;
     var CLICK_INTERVAL_MS = /*{{CLICK_INTERVAL_MS}}*/1000;
     var SCROLL_INTERVAL_MS = /*{{SCROLL_INTERVAL_MS}}*/500;
-    var CLICK_PATTERNS = /*{{CLICK_PATTERNS}}*/["Allow", "Always Allow", "Allow Once", "Run", "Run in Terminal", "Keep Waiting", "Accept all", "Accept", "Proceed", "Continue", "Retry", "Cho phép", "Luôn cho phép", "Chạy", "Tiếp tục", "Thử lại", "Chấp nhận", "Chấp thuận", "Đồng ý"];
+    var CLICK_PATTERNS = /*{{CLICK_PATTERNS}}*/["Allow", "Always Allow", "Allow Once", "Run", "Run in Terminal", "Keep Waiting", "Accept all", "Accept", "Proceed", "Continue", "Retry", "Submit", "Confirm", "Cho phép", "Luôn cho phép", "Chạy", "Tiếp tục", "Thử lại", "Chấp nhận", "Chấp thuận", "Đồng ý", "Xác nhận"];
     window._agAcceptChatOnly = /*{{ACCEPT_IN_CHAT_ONLY}}*/true;
 
     // Live ON/OFF flag — exposed on window for all scopes + DevTools access
     window._agAutoEnabled = /*{{ENABLED}}*/true;
-    window._agScrollEnabled = true; // separate scroll toggle
+    window._agScrollEnabled = /*{{SCROLL_ENABLED}}*/true; // separate scroll toggle
 
     // --- ON/OFF polling via HTTP server (dynamic port discovery) ---
     var AG_HTTP_PORT_START = 48787;
@@ -62,53 +62,100 @@
     var _agSessionStats = {};
     var _agSessionTotal = 0;
 
-    // --- Port Discovery: scan range to find our server ---
+    // --- Port Discovery: check cached/default first, then scan range ---
     function _agDiscoverPort(callback) {
         if (_agPortScanning) return;
         _agPortScanning = true;
-        var found = false;
-        var pending = 0;
-        var startPort = AG_HTTP_PORT_START;
-        function tryBatch(from) {
-            if (from > AG_HTTP_PORT_END || found) {
-                if (!found) {
-                    _agPortScanning = false;
-                    console.log('[AG Auto] Port scan: no server found in range ' + AG_HTTP_PORT_START + '-' + AG_HTTP_PORT_END);
-                }
-                return;
-            }
-            var batchEnd = Math.min(from + 7, AG_HTTP_PORT_END);
-            pending = 0;
-            for (var p = from; p <= batchEnd; p++) {
-                (function (port) {
-                    pending++;
-                    var xhr = new XMLHttpRequest();
-                    xhr.open('GET', 'http://127.0.0.1:' + port + '/ag-status?t=' + Date.now(), true);
-                    xhr.timeout = 800;
-                    xhr.onload = function () {
-                        if (found) return;
-                        if (xhr.status === 200) {
-                            try {
-                                var cfg = JSON.parse(xhr.responseText);
-                                if (typeof cfg.enabled === 'boolean') {
-                                    found = true;
-                                    AG_HTTP_PORT = port;
-                                    _agPortScanning = false;
-                                    console.log('[AG Auto] ✅ Discovered server on port ' + port);
-                                    if (callback) callback(port, cfg);
-                                }
-                            } catch (_e) { }
+
+        function probePort(p, onResult) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', 'http://127.0.0.1:' + p + '/ag-status?t=' + Date.now(), true);
+            xhr.timeout = 600;
+            xhr.onload = function () {
+                if (xhr.status === 200) {
+                    try {
+                        var cfg = JSON.parse(xhr.responseText);
+                        if (typeof cfg.enabled === 'boolean') {
+                            onResult(true, cfg);
+                            return;
                         }
-                        pending--;
-                        if (pending <= 0 && !found) tryBatch(batchEnd + 1);
-                    };
-                    xhr.onerror = function () { pending--; if (pending <= 0 && !found) tryBatch(batchEnd + 1); };
-                    xhr.ontimeout = function () { pending--; if (pending <= 0 && !found) tryBatch(batchEnd + 1); };
-                    xhr.send();
-                })(p);
-            }
+                    } catch (_) { }
+                }
+                onResult(false, null);
+            };
+            xhr.onerror = function () { onResult(false, null); };
+            xhr.ontimeout = function () { onResult(false, null); };
+            xhr.send();
         }
-        tryBatch(startPort);
+
+        function onPortFound(port, cfg) {
+            AG_HTTP_PORT = port;
+            _agPortScanning = false;
+            try { localStorage.setItem('ag_last_port', String(port)); } catch (_) { }
+            console.log('[AG Auto] ✅ Discovered server on port ' + port);
+            if (callback) callback(port, cfg);
+        }
+
+        // 1. Try cached port from localStorage
+        var cachedPort = 0;
+        try {
+            var cp = parseInt(localStorage.getItem('ag_last_port') || '0', 10);
+            if (cp >= AG_HTTP_PORT_START && cp <= AG_HTTP_PORT_END) cachedPort = cp;
+        } catch (_) { }
+
+        function tryDefaultThenScan() {
+            probePort(AG_HTTP_PORT_START, function (ok, cfg) {
+                if (ok) {
+                    onPortFound(AG_HTTP_PORT_START, cfg);
+                    return;
+                }
+                // Fallback to range scan
+                doRangeScan();
+            });
+        }
+
+        function doRangeScan() {
+            var found = false;
+            var pending = 0;
+            function tryBatch(from) {
+                if (from > AG_HTTP_PORT_END || found) {
+                    if (!found) {
+                        _agPortScanning = false;
+                        console.log('[AG Auto] Port scan: no server found in range ' + AG_HTTP_PORT_START + '-' + AG_HTTP_PORT_END);
+                    }
+                    return;
+                }
+                var batchEnd = Math.min(from + 7, AG_HTTP_PORT_END);
+                pending = 0;
+                for (var p = from; p <= batchEnd; p++) {
+                    (function (port) {
+                        pending++;
+                        probePort(port, function (ok, cfg) {
+                            if (found) return;
+                            if (ok) {
+                                found = true;
+                                onPortFound(port, cfg);
+                            }
+                            pending--;
+                            if (pending <= 0 && !found) tryBatch(batchEnd + 1);
+                        });
+                    })(p);
+                }
+            }
+            tryBatch(AG_HTTP_PORT_START);
+        }
+
+        if (cachedPort > 0) {
+            probePort(cachedPort, function (ok, cfg) {
+                if (ok) {
+                    onPortFound(cachedPort, cfg);
+                } else {
+                    tryDefaultThenScan();
+                }
+            });
+        } else {
+            tryDefaultThenScan();
+        }
     }
 
     function _agApplyConfig(cfg) {
@@ -183,19 +230,49 @@
     }, 2000);
     window._agToolIntervals.push(_agConfigReload);
 
-    var lastManualScrollTime = 0;
-    var isAutoScrolling = false;
-
     // =================================================================
     // Approval and Action Buttons Detection
     // =================================================================
     var REJECT_WORDS = ['Reject', 'Deny', 'Cancel', 'Dismiss', 'Don\'t Allow', 'Decline', 'Skip', 'Abort', 'Từ chối', 'Hủy', 'Bỏ qua', 'Không cho phép'];
 
+    // Explicitly detect and block only user prompt submit / send buttons (never auto-click user prompt send while typing)
+    // NOTE: Does NOT block Agent interaction submit/continue buttons (e.g. data-testid="interaction-continue-button")!
+    function isUserPromptSendButton(el) {
+        if (!el) return false;
+
+        // Never consider Antigravity agent interaction confirmation buttons as user prompt buttons!
+        if (el.getAttribute && el.getAttribute('data-testid') === 'interaction-continue-button') return false;
+        if (el.closest && el.closest('[data-testid="interaction-continue-button"]')) return false;
+
+        // Check test id or tooltip specifically for user prompt send button
+        var testId = el.getAttribute ? el.getAttribute('data-testid') : '';
+        if (testId === 'send-button' || testId === 'composer-send-button') return true;
+
+        var tooltipId = el.getAttribute ? el.getAttribute('data-tooltip-id') : '';
+        if (tooltipId && tooltipId.indexOf('send') !== -1 && tooltipId.indexOf('input') !== -1) return true;
+
+        var ariaLabel = (el.getAttribute ? el.getAttribute('aria-label') : '') || '';
+        if (ariaLabel === 'Send message' || ariaLabel === 'Gửi tin nhắn' || ariaLabel === 'Send Prompt') return true;
+
+        // Check if button is inside the chat input / composer textarea container (where user types)
+        if (el.closest && (
+            el.closest('.chat-input-actions') ||
+            el.closest('.composer-submit-action') ||
+            el.closest('.interactive-input-part') ||
+            el.closest('[class*="chat-input"]') ||
+            el.closest('[class*="composer-actions"]')
+        )) {
+            return true;
+        }
+
+        return false;
+    }
+
     function getAllClickables(root) {
         if (!root) return [];
         var results = [];
         try {
-            var elements = root.querySelectorAll('button, a.action-label, [role="button"], .monaco-button, div[role="button"], span.cursor-pointer, .cursor-pointer, .bg-ide-button-background, vscode-button, input[type="button"], input[type="submit"]');
+            var elements = root.querySelectorAll('button, a.action-label, [role="button"], .monaco-button, div[role="button"], span.cursor-pointer, .cursor-pointer, .bg-ide-button-background, vscode-button, input[type="button"]');
             for (var i = 0; i < elements.length; i++) {
                 results.push(elements[i]);
             }
@@ -226,6 +303,7 @@
     }
 
     function isApprovalButton(btn) {
+        if (btn.getAttribute && btn.getAttribute('data-testid') === 'interaction-continue-button') return true;
         if (isInsideAgentOrChat(btn)) return true;
 
         var parent = btn.parentElement;
@@ -236,9 +314,9 @@
             for (var i = 0; i < siblingBtns.length; i++) {
                 var sib = siblingBtns[i];
                 if (sib === btn) continue;
-                var sibText = (sib.innerText || sib.textContent || '').trim();
+                var sibText = (sib.innerText || sib.textContent || '').trim().toLowerCase();
                 for (var j = 0; j < REJECT_WORDS.length; j++) {
-                    if (sibText.toLowerCase().indexOf(REJECT_WORDS[j].toLowerCase()) !== -1) {
+                    if (sibText.indexOf(REJECT_WORDS[j].toLowerCase()) !== -1) {
                         return true;
                     }
                 }
@@ -275,80 +353,143 @@
     var autoClick = setInterval(function () {
         if (!window._agAutoEnabled) return;
 
-        var clickables = getAllClickables(document);
         var targetBtn = null;
         var matchedPattern = '';
-        for (var i = 0; i < clickables.length; i++) {
-            var b = clickables[i];
-            if (b.offsetParent === null && b.offsetWidth === 0 && b.offsetHeight === 0) continue;
-            if (_clicked.has(b)) continue;
 
-            var text = (b.innerText || b.textContent || b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
-            if (!text || text.length > 50) continue;
-
-            // Skip diff/merge editor buttons — NEVER click these
-            var skipEditor = false;
-            for (var se = 0; se < EDITOR_SKIP_WORDS.length; se++) {
-                if (text.indexOf(EDITOR_SKIP_WORDS[se]) === 0) { skipEditor = true; break; }
-            }
-            if (skipEditor) continue;
-
-            // Skip buttons inside diff/merge editor containers + view-zones (inline widgets)
-            if (b.closest && (
-                b.closest('.monaco-diff-editor') || b.closest('.merge-editor-view') ||
-                b.closest('.inline-merge-region') || b.closest('.merged-editor') ||
-                b.closest('.view-zones') || b.closest('.view-lines') ||
-                b.closest('[id*="workbench.parts.editor"]')
-            )) continue;
-
-            // Skip diff hunk buttons (inline accept/reject in editor) — NEVER auto-click these
-            if (b.classList && (b.classList.contains('diff-hunk-button') || b.classList.contains('revert'))) {
-                var editorAncestor = b.closest && b.closest('[class*="editor"], [id*="editor"]');
-                if (editorAncestor) continue;
+        // Priority 1: Antigravity Agent Tool Approval / Confirmation Modal
+        // Handles "Allow check port status? ... [Skip] [Submit ↵]" to prevent UI hang
+        try {
+            var allRoots = [document];
+            var iframes = document.querySelectorAll('iframe, webview');
+            for (var ifr = 0; ifr < iframes.length; ifr++) {
+                try {
+                    var fDoc = iframes[ifr].contentDocument || (iframes[ifr].contentWindow && iframes[ifr].contentWindow.document);
+                    if (fDoc) allRoots.push(fDoc);
+                } catch (_) {}
             }
 
-            var cleanText = text.replace(/[\r\n\t]+/g, ' ').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
-            var matchesPattern = false;
-            for (var p = 0; p < CLICK_PATTERNS.length; p++) {
-                var pat = CLICK_PATTERNS[p];
-                if (!pat) continue;
-                var patLower = pat.toLowerCase();
+            for (var rIdx = 0; rIdx < allRoots.length; rIdx++) {
+                var cRoot = allRoots[rIdx];
+                var continueBtns = cRoot.querySelectorAll('[data-testid="interaction-continue-button"]');
+                for (var cbIdx = 0; cbIdx < continueBtns.length; cbIdx++) {
+                    var cBtn = continueBtns[cbIdx];
+                    if (_clicked.has(cBtn)) continue;
+                    var isDisabled = cBtn.disabled || cBtn.getAttribute('aria-disabled') === 'true';
+                    if (!isDisabled && (cBtn.offsetParent !== null || cBtn.offsetWidth > 0)) {
+                        targetBtn = cBtn;
+                        matchedPattern = 'Submit';
+                        break;
+                    } else if (isDisabled) {
+                        // If disabled because an option is not selected, select the first option
+                        var card = cBtn.closest('.outline-none') || cBtn.closest('[role="dialog"]') || cBtn.parentElement;
+                        if (card) {
+                            var firstOpt = card.querySelector('input[type="radio"], input[type="checkbox"], label[for^="ask-opt-"], div[data-testid*="interaction-option"]');
+                            if (firstOpt && !_clicked.has(firstOpt)) {
+                                simulateClick(firstOpt);
+                                _clicked.add(firstOpt);
+                            }
+                        }
+                    }
+                }
+                if (targetBtn) break;
+            }
+        } catch (_) {}
+
+        // Priority 2: General pattern matching across all clickables
+        if (!targetBtn) {
+            var clickables = getAllClickables(document);
+            for (var i = 0; i < clickables.length; i++) {
+                var b = clickables[i];
+                if (b.offsetParent === null && b.offsetWidth === 0 && b.offsetHeight === 0) continue;
+                if (_clicked.has(b)) continue;
+
+                // Never click user prompt composer send button
+                if (isUserPromptSendButton(b)) continue;
+
+                var text = (b.innerText || b.textContent || b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+                if (!text || text.length > 50) continue;
+
+                // Skip diff/merge editor buttons — NEVER click these
+                var skipEditor = false;
+                for (var se = 0; se < EDITOR_SKIP_WORDS.length; se++) {
+                    if (text.indexOf(EDITOR_SKIP_WORDS[se]) === 0) { skipEditor = true; break; }
+                }
+                if (skipEditor) continue;
+
+                // Skip buttons inside diff/merge editor containers + view-zones (inline widgets)
+                if (b.closest && (
+                    b.closest('.monaco-diff-editor') || b.closest('.merge-editor-view') ||
+                    b.closest('.inline-merge-region') || b.closest('.merged-editor') ||
+                    b.closest('.view-zones') || b.closest('.view-lines') ||
+                    b.closest('[id*="workbench.parts.editor"]')
+                )) continue;
+
+                // Skip diff hunk buttons (inline accept/reject in editor) — NEVER auto-click these
+                if (b.classList && (b.classList.contains('diff-hunk-button') || b.classList.contains('revert'))) {
+                    var editorAncestor = b.closest && b.closest('[class*="editor"], [id*="editor"]');
+                    if (editorAncestor) continue;
+                }
+
+                var cleanText = text.replace(/[\r\n\t]+/g, ' ').replace(/\(.*?\)/g, '').replace(/\[.*?\]/g, '').trim();
                 var cleanLower = cleanText.toLowerCase();
-                if (cleanLower === patLower || cleanLower.indexOf(patLower) === 0) {
-                    matchesPattern = true;
-                    matchedPattern = pat;
+                var matchesPattern = false;
+                for (var p = 0; p < CLICK_PATTERNS.length; p++) {
+                    var pat = CLICK_PATTERNS[p];
+                    if (!pat) continue;
+                    var patLower = pat.toLowerCase();
+                    if (cleanLower === patLower || cleanLower.indexOf(patLower) === 0) {
+                        matchesPattern = true;
+                        matchedPattern = pat;
+                        break;
+                    }
+                }
+                if (!matchesPattern) continue;
+
+                if (b.tagName === 'SPAN' && b.classList.contains('cursor-pointer')) {
+                    targetBtn = b;
+                    break;
+                }
+
+                if (b.classList && b.classList.contains('bg-ide-button-background')) {
+                    targetBtn = b;
+                    break;
+                }
+
+                if (isApprovalButton(b)) {
+                    targetBtn = b;
                     break;
                 }
             }
-            if (!matchesPattern) continue;
-
-            if (b.tagName === 'SPAN' && b.classList.contains('cursor-pointer')) {
-                targetBtn = b;
-                break;
-            }
-
-            if (isApprovalButton(b)) {
-                targetBtn = b;
-                break;
-            }
         }
 
-        // --- SEPARATE Accept handling (chat-only, approval prompts) ---
+        // Priority 3: Separate Accept handling (chat-only, approval prompts)
         if (!targetBtn && window._agAcceptChatOnly) {
+            var clickables = getAllClickables(document);
             for (var ai = 0; ai < clickables.length; ai++) {
                 var ab = clickables[ai];
                 if (ab.offsetParent === null && ab.offsetWidth === 0 && ab.offsetHeight === 0) continue;
                 if (_clicked.has(ab)) continue;
-                var aText = (ab.innerText || ab.textContent || ab.getAttribute('aria-label') || '').trim();
 
+                // Never click user prompt composer send button
+                if (isUserPromptSendButton(ab)) continue;
+
+                var aText = (ab.innerText || ab.textContent || ab.getAttribute('aria-label') || '').trim();
                 var aClean = aText.replace(/[\r\n\t]+/g, ' ').replace(/\(.*?\)/g, '').trim();
                 var aCleanLower = aClean.toLowerCase();
 
-                // Must start with "Accept" or "Chấp nhận" or "Chấp thuận"
-                if (!aCleanLower.startsWith('accept') && !aCleanLower.startsWith('chấp nhận') && !aCleanLower.startsWith('chấp thuận')) continue;
+                // Must start with approval/agreement keywords
+                var isAcceptWord = aCleanLower.startsWith('accept') ||
+                                   aCleanLower.startsWith('chấp nhận') ||
+                                   aCleanLower.startsWith('chấp thuận') ||
+                                   aCleanLower.startsWith('đồng ý') ||
+                                   aCleanLower.startsWith('agree') ||
+                                   aCleanLower.startsWith('confirm') ||
+                                   aCleanLower.startsWith('proceed') ||
+                                   aCleanLower.startsWith('xác nhận');
+                if (!isAcceptWord) continue;
 
-                // Block known editor/bulk accept patterns (case-insensitive)
-                if (/^accept\s+(changes|incoming|current|both|combination)/i.test(aCleanLower)) continue;
+                // Block known editor/bulk accept patterns
+                if (/^accept\s+(all|changes|incoming|current|both|combination)/i.test(aClean)) continue;
 
                 // BLOCK: skip if inside editor area
                 if (ab.closest && (
@@ -398,15 +539,15 @@
     window._agToolIntervals.push(autoClick);
 
     // --- 2. SMART SCROLL: Stick-to-bottom (like Discord/Slack) ---
+    var isAutoScrolling = false;
     var _agWasAtBottom = new WeakMap(); // track per-element: was the element at bottom?
     var _agJustScrolled = new WeakSet(); // elements we just scrolled programmatically
     var BOTTOM_THRESHOLD = 150; // pixels from bottom to consider "at bottom"
 
     var CHAT_SCROLL_SELECTOR = '.antigravity-agent-side-panel, [class*="agent-side-panel"], [class*="chat-panel"], [class*="antigravity"], [id*="antigravity.agent"], [class*="agent"], [class*="chat"], [class*="composer"], .interactive-session, .chat-list, .chat-scrollable';
 
-    // --- 3. AUTO SCROLL ---
+    // --- 3. AUTO SCROLL (Independent from Auto Click/Accept) ---
     var autoScroll = setInterval(function () {
-        if (!window._agAutoEnabled) return;
         if (!window._agScrollEnabled) return;
 
         var scrollables = Array.from(document.querySelectorAll('*')).filter(function (el) {
