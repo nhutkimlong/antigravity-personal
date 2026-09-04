@@ -3,7 +3,7 @@ name: Publish Extension
 on:
   push:
     tags:
-      - 'v*' # 当你推送形如 v1.0.0 的标签时触发发布
+      - 'v*'
 
 jobs:
   publish:
@@ -12,12 +12,12 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 20
 
       - name: Install Dependencies
         run: npm ci
@@ -25,28 +25,35 @@ jobs:
       - name: Package Extension
         run: |
           rm -f *.vsix
-          npx @vscode/vsce package
+          npx @vscode/vsce package --no-dependencies
 
       # ==========================================
-      # 发布到 VS Code Marketplace (微软官方市场)
-      # ==========================================
-      - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish -i *.vsix
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      # ==========================================
-      # 发布到 Open VSX Registry (开源市场)
-      # ==========================================
-      - name: Publish to Open VSX Registry
-        run: npx ovsx publish *.vsix --pat ${{ secrets.OPEN_VSX_TOKEN }}
-
-      # ==========================================
-      # 创建 GitHub Release
+      # Tạo GitHub Release và đính kèm file .vsix
       # ==========================================
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: "*.vsix"
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ==========================================
+      # Tùy chọn: Publish lên VS Code Marketplace nếu có token
+      # ==========================================
+      - name: Publish to VS Code Marketplace
+        if: env.VSCE_PAT != ''
+        continue-on-error: true
+        run: npx @vscode/vsce publish -i *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      # ==========================================
+      # Tùy chọn: Publish lên Open VSX nếu có token
+      # ==========================================
+      - name: Publish to Open VSX Registry
+        if: env.OPEN_VSX_TOKEN != ''
+        continue-on-error: true
+        run: npx ovsx publish *.vsix --pat ${{ secrets.OPEN_VSX_TOKEN }}
+        env:
+          OPEN_VSX_TOKEN: ${{ secrets.OPEN_VSX_TOKEN }}
