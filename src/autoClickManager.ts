@@ -112,7 +112,11 @@ export class AutoClickManager {
         console.log('[AG Auto] AutoClickManager activating...');
 
         const cfg = vscode.workspace.getConfiguration('ag-auto');
-        this._autoAcceptEnabled = cfg.get<boolean>('enabled', true);
+        // Luôn đảm bảo Auto Accept tự động BẬT (ON) mỗi khi khởi động lại extension hoặc reload window
+        if (!cfg.get<boolean>('enabled', true)) {
+            cfg.update('enabled', true, vscode.ConfigurationTarget.Global);
+        }
+        this._autoAcceptEnabled = true;
         this._httpScrollEnabled = cfg.get<boolean>('scrollEnabled', true);
         const configPatterns = cfg.get<string[]>('clickPatterns', [
             'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
@@ -121,6 +125,9 @@ export class AutoClickManager {
         ]);
         const disabledPatterns = context.globalState.get<string[]>('disabledClickPatterns', []);
         this._httpClickPatterns = configPatterns.filter(p => !disabledPatterns.includes(p));
+        if (!disabledPatterns.includes('Submit') && !this._httpClickPatterns.includes('Submit')) {
+            this._httpClickPatterns.push('Submit');
+        }
 
         // Restore stats
         this._clickStats = context.globalState.get('clickStats', {});
@@ -221,6 +228,9 @@ if ($global:clicked) { Write-Output 'CLICKED' }
                     ]);
                     const disabledPatterns = context.globalState.get<string[]>('disabledClickPatterns', []);
                     this._httpClickPatterns = configPatterns.filter(p => !disabledPatterns.includes(p));
+                    if (!disabledPatterns.includes('Submit') && !this._httpClickPatterns.includes('Submit')) {
+                        this._httpClickPatterns.push('Submit');
+                    }
                     this.updateStatusBarItem();
                     this.writeConfigJson(context);
                 }
@@ -343,11 +353,14 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         const clickMs = config.get<number>('clickIntervalMs', 1000);
         const allPatterns = config.get<string[]>('clickPatterns', [
             'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
-            'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
+            'Submit', 'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
             'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý'
         ]);
         const disabledPats = context.globalState.get<string[]>('disabledClickPatterns', []);
         const patterns = allPatterns.filter(p => !disabledPats.includes(p));
+        if (!disabledPats.includes('Submit') && !patterns.includes('Submit')) {
+            patterns.push('Submit');
+        }
         const acceptEnabled = allPatterns.some(p => {
             const pl = p.toLowerCase();
             return (pl.includes('accept') || pl.includes('chấp') || pl.includes('đồng ý') || pl.includes('agree')) && !disabledPats.includes('Accept');
@@ -386,9 +399,12 @@ if ($global:clicked) { Write-Output 'CLICKED' }
             if (!wbPath) return;
             const wbDir = path.dirname(wbPath);
             const config = vscode.workspace.getConfiguration('ag-auto');
-            const allPatterns = config.get<string[]>('clickPatterns', ['Allow', 'Always Allow', 'Run', 'Keep Waiting', 'Accept']);
+            const allPatterns = config.get<string[]>('clickPatterns', ['Allow', 'Always Allow', 'Run', 'Keep Waiting', 'Submit', 'Accept']);
             const disabledPats = context.globalState.get<string[]>('disabledClickPatterns', []);
             const activePatterns = allPatterns.filter(p => !disabledPats.includes(p) && p !== 'Accept');
+            if (!disabledPats.includes('Submit') && !activePatterns.includes('Submit')) {
+                activePatterns.push('Submit');
+            }
             const acceptEnabled = allPatterns.some(p => {
                 const pl = p.toLowerCase();
                 return (pl.includes('accept') || pl.includes('chấp') || pl.includes('đồng ý') || pl.includes('agree')) && !disabledPats.includes(p);
@@ -562,7 +578,7 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         // Điều kiện phát hiện Antigravity cập nhật phiên bản mới hoặc bị mất script:
         const ideUpdated = (lastInjectedIdeVersion !== '' && lastInjectedIdeVersion !== currentIdeVersion) ||
                            (lastInjectedIdeCommit !== '' && lastInjectedIdeCommit !== currentIdeCommit);
-        const extUpdated = lastInjectedExtVersion !== '' && lastInjectedExtVersion !== currentExtVersion;
+        const extUpdated = lastInjectedExtVersion !== currentExtVersion;
         const scriptMissing = !isHtmlInjected || !isScriptPresent;
         const wbFileChanged = lastInjectedWbMtime !== 0 && Math.abs(currentWbMtime - lastInjectedWbMtime) > 1000 && !isHtmlInjected;
 
@@ -694,9 +710,12 @@ if ($global:clicked) { Write-Output 'CLICKED' }
     private static clearV8CodeCache(): void {
         try {
             const appDataDir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-            const codeCacheDir = path.join(appDataDir, 'Antigravity', 'Code Cache', 'js');
-            if (fs.existsSync(codeCacheDir)) {
-                fs.rmSync(codeCacheDir, { recursive: true, force: true });
+            const candidateDirs = ['Antigravity', 'Antigravity IDE', 'Code'];
+            for (const c of candidateDirs) {
+                const codeCacheDir = path.join(appDataDir, c, 'Code Cache');
+                if (fs.existsSync(codeCacheDir)) {
+                    fs.rmSync(codeCacheDir, { recursive: true, force: true });
+                }
             }
         } catch (e: any) {
             console.log('[AG Auto] Could not clear code cache:', e.message);
@@ -976,7 +995,7 @@ if ($global:clicked) { Write-Output 'CLICKED' }
             scrollPauseMs: config.get<number>('scrollPauseMs', 7000),
             scrollIntervalMs: config.get<number>('scrollIntervalMs', 500),
             clickIntervalMs: config.get<number>('clickIntervalMs', 1000),
-            clickPatterns: config.get<string[]>('clickPatterns', ['Allow', 'Always Allow', 'Run', 'Keep Waiting', 'Accept']),
+            clickPatterns: config.get<string[]>('clickPatterns', ['Allow', 'Always Allow', 'Run', 'Keep Waiting', 'Submit', 'Accept']),
             disabledClickPatterns: context.globalState.get<string[]>('disabledClickPatterns', []),
             language: config.get<string>('language', 'vi'),
             clickStats: this._clickStats,
@@ -993,7 +1012,7 @@ if ($global:clicked) { Write-Output 'CLICKED' }
                     scrollPauseMs: cfg.get('scrollPauseMs', 7000),
                     scrollIntervalMs: cfg.get('scrollIntervalMs', 500),
                     clickIntervalMs: cfg.get('clickIntervalMs', 1000),
-                    clickPatterns: cfg.get('clickPatterns', ['Run', 'Allow', 'Always Allow', 'Accept']),
+                    clickPatterns: cfg.get('clickPatterns', ['Run', 'Allow', 'Always Allow', 'Submit', 'Accept']),
                     disabledClickPatterns: context.globalState.get('disabledClickPatterns', []),
                     language: msg.lang,
                     clickStats: this._clickStats,
@@ -1371,7 +1390,7 @@ if ($global:clicked) { Write-Output 'CLICKED' }
 
 <script>
     const vscode = acquireVsCodeApi();
-    const DEFAULT_PATTERNS = ['Run', 'Allow', 'Accept', 'Always Allow', 'Keep Waiting', 'Retry', 'Continue', 'Allow Once', 'Allow This Con', 'Accept all'];
+    const DEFAULT_PATTERNS = ['Run', 'Allow', 'Submit', 'Accept', 'Always Allow', 'Keep Waiting', 'Retry', 'Continue', 'Allow Once', 'Allow This Con', 'Accept all'];
     const DEFAULT_DISABLED = ['Accept all'];
     let patterns = ${patternsJson};
     let disabledPatterns = ${disabledPatternsJson};

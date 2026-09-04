@@ -2,7 +2,7 @@
   "name": "antigravity-personal",
   "displayName": "Antigravity Personal Extension",
   "description": "Personal extension for Google Antigravity: Multi-account model manager with Auto-Accept & Auto-Scroll",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "publisher": "Personal",
   "icon": "resources/icon.png",
   "repository": {

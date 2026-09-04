@@ -343,6 +343,43 @@
     // Words in buttons that should NEVER be auto-clicked (editor/diff UI buttons)
     var EDITOR_SKIP_WORDS = ['Accept Changes', 'Accept All', 'Accept Incoming', 'Accept Current', 'Accept Both', 'Accept Combination'];
 
+    // Strictly ignore elements from status bar, activity bar, title bar, tabs, and extension toggles
+    function isIgnoredElement(el) {
+        if (!el) return false;
+
+        // Never consider Antigravity agent interaction confirmation buttons as ignored!
+        if (el.getAttribute && el.getAttribute('data-testid') === 'interaction-continue-button') return false;
+        if (el.closest && el.closest('[data-testid="interaction-continue-button"]')) return false;
+
+        // Strictly ignore status bar, activity bar, title bar, and tabs
+        if (el.closest && (
+            el.closest('#workbench\\.parts\\.statusbar') ||
+            el.closest('.statusbar') ||
+            el.closest('.part.statusbar') ||
+            el.closest('[id*="statusbar"]') ||
+            el.closest('.statusbar-item') ||
+            el.closest('#workbench\\.parts\\.activitybar') ||
+            el.closest('.activitybar') ||
+            el.closest('.part.activitybar') ||
+            el.closest('#workbench\\.parts\\.titlebar') ||
+            el.closest('.titlebar') ||
+            el.closest('.part.titlebar') ||
+            el.closest('.tabs-container') ||
+            el.closest('.tab')
+        )) {
+            return true;
+        }
+
+        // Strictly ignore the extension's own status items or settings toggles
+        var txt = (el.innerText || el.textContent || (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '').trim().toLowerCase();
+        if (txt.indexOf('accept on') !== -1 || txt.indexOf('accept off') !== -1 ||
+            txt.indexOf('scroll on') !== -1 || txt.indexOf('scroll off') !== -1) {
+            return true;
+        }
+
+        return false;
+    }
+
     var _clicked = new WeakSet();
 
     // --- Click Stats tracking ---
@@ -370,25 +407,46 @@
 
             for (var rIdx = 0; rIdx < allRoots.length; rIdx++) {
                 var cRoot = allRoots[rIdx];
-                var continueBtns = cRoot.querySelectorAll('[data-testid="interaction-continue-button"]');
+                var continueBtns = cRoot.querySelectorAll(
+                    '[data-testid="interaction-continue-button"], ' +
+                    '[data-testid="interaction-skip-button"] ~ button, ' +
+                    '[data-testid="interaction-skip-button"] + button, ' +
+                    'button[data-tooltip-id*="Submit"], ' +
+                    'button[data-tooltip-id*="Continue"]'
+                );
                 for (var cbIdx = 0; cbIdx < continueBtns.length; cbIdx++) {
                     var cBtn = continueBtns[cbIdx];
                     if (_clicked.has(cBtn)) continue;
-                    var isDisabled = cBtn.disabled || cBtn.getAttribute('aria-disabled') === 'true';
-                    if (!isDisabled && (cBtn.offsetParent !== null || cBtn.offsetWidth > 0)) {
+                    if (isIgnoredElement(cBtn)) continue;
+
+                    var isDisabled = cBtn.disabled || cBtn.getAttribute('aria-disabled') === 'true' || (cBtn.classList && cBtn.classList.contains('disabled'));
+                    if (isDisabled) {
+                        // If disabled because an option is not selected, select the first option (e.g. 1. Yes, allow this time)
+                        var card = cBtn.closest('.outline-none') || cBtn.closest('[role="dialog"]') || cBtn.closest('.interactive-session') || (cBtn.parentElement && cBtn.parentElement.parentElement);
+                        if (card) {
+                            var firstOptLabel = card.querySelector('label[for^="ask-opt-"]');
+                            var firstRadio = card.querySelector('input[type="radio"], input[type="checkbox"]');
+                            if (firstOptLabel && !_clicked.has(firstOptLabel)) {
+                                simulateClick(firstOptLabel);
+                                _clicked.add(firstOptLabel);
+                            }
+                            if (firstRadio && !firstRadio.checked) {
+                                firstRadio.checked = true;
+                                try {
+                                    firstRadio.dispatchEvent(new Event('change', { bubbles: true }));
+                                    firstRadio.dispatchEvent(new Event('input', { bubbles: true }));
+                                } catch (_) {}
+                                _clicked.add(firstRadio);
+                            }
+                        }
+                        // Do not set targetBtn or mark cBtn clicked while disabled!
+                        continue;
+                    }
+
+                    if (cBtn.offsetParent !== null || cBtn.offsetWidth > 0) {
                         targetBtn = cBtn;
                         matchedPattern = 'Submit';
                         break;
-                    } else if (isDisabled) {
-                        // If disabled because an option is not selected, select the first option
-                        var card = cBtn.closest('.outline-none') || cBtn.closest('[role="dialog"]') || cBtn.parentElement;
-                        if (card) {
-                            var firstOpt = card.querySelector('input[type="radio"], input[type="checkbox"], label[for^="ask-opt-"], div[data-testid*="interaction-option"]');
-                            if (firstOpt && !_clicked.has(firstOpt)) {
-                                simulateClick(firstOpt);
-                                _clicked.add(firstOpt);
-                            }
-                        }
                     }
                 }
                 if (targetBtn) break;
@@ -403,8 +461,14 @@
                 if (b.offsetParent === null && b.offsetWidth === 0 && b.offsetHeight === 0) continue;
                 if (_clicked.has(b)) continue;
 
+                // Never click disabled buttons
+                if (b.disabled || b.getAttribute('aria-disabled') === 'true' || (b.classList && b.classList.contains('disabled'))) continue;
+
                 // Never click user prompt composer send button
                 if (isUserPromptSendButton(b)) continue;
+
+                // Never click status bar, activity bar, or internal UI elements
+                if (isIgnoredElement(b)) continue;
 
                 var text = (b.innerText || b.textContent || b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
                 if (!text || text.length > 50) continue;
@@ -470,8 +534,17 @@
                 if (ab.offsetParent === null && ab.offsetWidth === 0 && ab.offsetHeight === 0) continue;
                 if (_clicked.has(ab)) continue;
 
+                // Never click disabled buttons
+                if (ab.disabled || ab.getAttribute('aria-disabled') === 'true' || (ab.classList && ab.classList.contains('disabled'))) continue;
+
                 // Never click user prompt composer send button
                 if (isUserPromptSendButton(ab)) continue;
+
+                // Never click status bar, activity bar, or internal UI elements
+                if (isIgnoredElement(ab)) continue;
+
+                // Must be inside Agent/Chat or an approval dialog — NEVER click outside!
+                if (!isInsideAgentOrChat(ab) && !isApprovalButton(ab)) continue;
 
                 var aText = (ab.innerText || ab.textContent || ab.getAttribute('aria-label') || '').trim();
                 var aClean = aText.replace(/[\r\n\t]+/g, ' ').replace(/\(.*?\)/g, '').trim();
@@ -526,6 +599,10 @@
             console.log("[AG Auto] 🎯 Click: [" + btnLabel + "]");
             _clicked.add(targetBtn);
             simulateClick(targetBtn);
+            try {
+                var enterEvent = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+                targetBtn.dispatchEvent(enterEvent);
+            } catch (_) {}
             // Track click in session delta (server will accumulate)
             _agSessionTotal++;
             if (!_agSessionStats[matchedPattern]) _agSessionStats[matchedPattern] = 0;
