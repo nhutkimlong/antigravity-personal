@@ -533,12 +533,17 @@ function killAllAntigravity() {
 }
 
 // === 等待进程完全退出 ===
-async function waitForProcessExit(maxWaitSec = 30) {
-    log('等待 Antigravity IDE 进程退出...');
-    // 简化：直接等待固定时间，避免 execSync 在 VBScript 进程中卡住
-    log('等待 ' + maxWaitSec + ' 秒让进程完全退出...');
-    await sleep(maxWaitSec * 1000);
-    log('等待完成，假设 IDE 进程已退出');
+async function waitForProcessExit(maxWaitMs = 4000) {
+    log('正在检测并等待 Antigravity IDE 进程完全退出...');
+    const startTime = Date.now();
+    while (Date.now() - startTime < maxWaitMs) {
+        if (!isAntigravityRunning()) {
+            log('IDE 进程已完全退出 (耗时 ' + (Date.now() - startTime) + 'ms)');
+            return true;
+        }
+        await sleep(200);
+    }
+    log('等待超时 (' + maxWaitMs + 'ms)，继续执行注入流程');
     return true;
 }
 // === Protobuf 编解码 ===
@@ -1084,42 +1089,38 @@ function startIDE() {
 // === 主流程 ===
 async function main() {
     log('========================================');
-    log('Antigravity Multi-Account Cockpit 账号切换代理启动');
+    log('Antigravity Multi-Account Cockpit 账号切换代理启动 (Fast Mode)');
     log('平台: ' + PLATFORM);
     log('数据库: ' + DB_PATH);
     log('========================================');
     
-    // 1. 先等待让 VS Code 发出 quit 命令
-    const initialWait = Math.max(2, Math.floor(PROCESS_WAIT_SECONDS / 5));
-    log('等待 ' + initialWait + ' 秒让主进程发送退出命令...');
-    await sleep(initialWait * 1000);
+    // 1. 短暂等待 400ms 让主进程断开
+    log('等待 400ms 让主进程准备退出...');
+    await sleep(400);
     
     // 2. 主动强制关闭所有 Antigravity 进程
     killAllAntigravity();
     
-    // 3. 等待 IDE 进程完全退出
-    const exitWait = Math.max(5, Math.floor(PROCESS_WAIT_SECONDS / 2));
-    await waitForProcessExit(exitWait);
+    // 3. 快速轮询等待 IDE 进程完全退出
+    await waitForProcessExit(4000);
     
-    // 4. 额外等待确保文件锁释放
-    const releaseWait = Math.max(3, Math.floor(PROCESS_WAIT_SECONDS / 3));
-    log('等待 ' + releaseWait + ' 秒确保资源完全释放...');
-    await sleep(releaseWait * 1000);
+    // 4. 短暂缓冲 300ms 确保文件锁释放
+    await sleep(300);
     
-    // 3. 注入 Token
+    // 5. 注入 Token
     const injected = await injectToken();
     if (!injected) {
         log('注入失败，终止流程');
         process.exit(1);
     }
     
-    // 4. 等待一下确保写入完成
-    await sleep(1000);
+    // 6. 极短缓冲 200ms 确保写盘
+    await sleep(200);
     
-    // 5. 启动 IDE
+    // 7. 立即启动 IDE
     const started = startIDE();
     if (started) {
-        log('IDE 启动指令已发送');
+        log('IDE 启动指令已发送 (极速重启完成)');
     } else {
         log('IDE 启动失败，请手动打开 Antigravity');
     }

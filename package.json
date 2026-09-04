@@ -2,7 +2,7 @@
   "name": "antigravity-personal",
   "displayName": "Antigravity Personal Extension",
   "description": "Personal extension for Google Antigravity: Multi-account model manager with Auto-Accept & Auto-Scroll",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "publisher": "Personal",
   "icon": "resources/icon.png",
   "repository": {
@@ -20,6 +20,65 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "antigravity-personal",
+          "title": "Antigravity Personal",
+          "icon": "resources/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "antigravity-personal": [
+        {
+          "id": "antigravityAccounts",
+          "name": "Tài Khoản & Quota",
+          "type": "tree"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "antigravity-cockpit.openDashboard",
+          "when": "view == antigravityAccounts",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ag-auto.openSettings",
+          "when": "view == antigravityAccounts",
+          "group": "navigation@2"
+        },
+        {
+          "command": "antigravity-cockpit.refreshAllAccounts",
+          "when": "view == antigravityAccounts",
+          "group": "navigation@3"
+        },
+        {
+          "command": "antigravity-cockpit.addAccount",
+          "when": "view == antigravityAccounts",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "antigravity-cockpit.switchAccount",
+          "when": "view == antigravityAccounts && viewItem == account",
+          "group": "inline@1"
+        },
+        {
+          "command": "antigravity-cockpit.refreshAccount",
+          "when": "view == antigravityAccounts && viewItem == account",
+          "group": "inline@2"
+        },
+        {
+          "command": "antigravity-cockpit.deleteAccount",
+          "when": "view == antigravityAccounts && viewItem == account",
+          "group": "inline@3"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "antigravity-cockpit.refreshAccounts",
@@ -28,24 +87,33 @@
       },
       {
         "command": "antigravity-cockpit.switchAccount",
-        "title": "%command.switchAccount%"
+        "title": "%command.switchAccount%",
+        "icon": "$(arrow-swap)"
       },
       {
         "command": "antigravity-cockpit.refreshAccount",
-        "title": "%command.refreshAccount%"
+        "title": "%command.refreshAccount%",
+        "icon": "$(refresh)"
       },
       {
         "command": "antigravity-cockpit.refreshAllAccounts",
-        "title": "%command.refreshAllAccounts%"
+        "title": "%command.refreshAllAccounts%",
+        "icon": "$(sync)"
       },
       {
         "command": "antigravity-cockpit.openDashboard",
-        "title": "%command.openDashboard%"
+        "title": "%command.openDashboard%",
+        "icon": "$(dashboard)"
       },
       {
         "command": "antigravity-cockpit.addAccount",
         "title": "%command.addAccount%",
         "icon": "$(add)"
+      },
+      {
+        "command": "antigravity-cockpit.deleteAccount",
+        "title": "Antigravity: Xóa tài khoản này",
+        "icon": "$(trash)"
       },
       {
         "command": "antigravity-cockpit.openSwitchLogs",
@@ -90,7 +158,8 @@
       },
       {
         "command": "ag-auto.openSettings",
-        "title": "AG Auto: Mở Bảng Cài Đặt"
+        "title": "AG Auto: Mở Bảng Cài Đặt",
+        "icon": "$(gear)"
       },
       {
         "command": "ag-auto.toggleAccept",

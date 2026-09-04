@@ -28,14 +28,12 @@
                 }
             });
         }
-        // Check immediately and periodically for the first 30s
         dismissCorrupt();
         var attempts = 0;
         var timer = setInterval(function () {
             dismissCorrupt();
             if (++attempts > 30) clearInterval(timer);
         }, 1000);
-        // Also watch DOM mutations
         try {
             var observer = new MutationObserver(function () { dismissCorrupt(); });
             var target = document.body || document.documentElement;
@@ -47,9 +45,8 @@
     var PAUSE_SCROLL_MS = /*{{PAUSE_SCROLL_MS}}*/7000;
     var CLICK_INTERVAL_MS = /*{{CLICK_INTERVAL_MS}}*/1000;
     var SCROLL_INTERVAL_MS = /*{{SCROLL_INTERVAL_MS}}*/500;
-    var CLICK_PATTERNS = /*{{CLICK_PATTERNS}}*/["Allow", "Always Allow", "Run", "Keep Waiting", "Accept all"];
-    // Accept is handled SEPARATELY (chat-only) — never in CLICK_PATTERNS
-    window._agAcceptChatOnly = false;
+    var CLICK_PATTERNS = /*{{CLICK_PATTERNS}}*/["Allow", "Always Allow", "Allow Once", "Run", "Run in Terminal", "Keep Waiting", "Accept all", "Accept", "Proceed", "Continue", "Retry", "Cho phép", "Luôn cho phép", "Chạy", "Tiếp tục", "Thử lại", "Chấp nhận", "Chấp thuận", "Đồng ý"];
+    window._agAcceptChatOnly = /*{{ACCEPT_IN_CHAT_ONLY}}*/true;
 
     // Live ON/OFF flag — exposed on window for all scopes + DevTools access
     window._agAutoEnabled = /*{{ENABLED}}*/true;
@@ -62,7 +59,6 @@
     var _agPollCount = 0;
     var _agPollErrors = 0;
     var _agPortScanning = false;
-    // Track ONLY this session's clicks (delta since last send)
     var _agSessionStats = {};
     var _agSessionTotal = 0;
 
@@ -73,7 +69,6 @@
         var found = false;
         var pending = 0;
         var startPort = AG_HTTP_PORT_START;
-        // Try ports in batches of 8 to avoid too many simultaneous XHRs
         function tryBatch(from) {
             if (from > AG_HTTP_PORT_END || found) {
                 if (!found) {
@@ -125,7 +120,7 @@
         }
         if (typeof cfg.scrollEnabled === 'boolean') window._agScrollEnabled = cfg.scrollEnabled;
         if (cfg.clickPatterns && Array.isArray(cfg.clickPatterns)) {
-            CLICK_PATTERNS = cfg.clickPatterns.filter(function (p) { return p !== 'Accept'; });
+            CLICK_PATTERNS = cfg.clickPatterns;
         }
         if (typeof cfg.acceptInChatOnly === 'boolean') window._agAcceptChatOnly = cfg.acceptInChatOnly;
         if (cfg.pauseScrollMs) PAUSE_SCROLL_MS = cfg.pauseScrollMs;
@@ -150,12 +145,10 @@
 
     var _agConfigReload = setInterval(function () {
         _agPollCount++;
-        // If port not discovered yet, re-scan every 10 polls
         if (AG_HTTP_PORT === 0) {
             if (_agPollCount % 5 === 0) _agDiscoverPort(function (port, cfg) { _agApplyConfig(cfg); _agPollErrors = 0; });
             return;
         }
-        // If too many errors, try to re-discover port (server may have restarted on new port)
         if (_agPollErrors > 3) {
             AG_HTTP_PORT = 0;
             _agPollErrors = 0;
@@ -194,28 +187,56 @@
     var isAutoScrolling = false;
 
     // =================================================================
-    // Only click APPROVAL buttons (NOT random UI buttons)
+    // Approval and Action Buttons Detection
     // =================================================================
     var REJECT_WORDS = ['Reject', 'Deny', 'Cancel', 'Dismiss', 'Don\'t Allow', 'Decline', 'Skip', 'Abort', 'Từ chối', 'Hủy', 'Bỏ qua', 'Không cho phép'];
 
+    function getAllClickables(root) {
+        if (!root) return [];
+        var results = [];
+        try {
+            var elements = root.querySelectorAll('button, a.action-label, [role="button"], .monaco-button, div[role="button"], span.cursor-pointer, .cursor-pointer, .bg-ide-button-background, vscode-button, input[type="button"], input[type="submit"]');
+            for (var i = 0; i < elements.length; i++) {
+                results.push(elements[i]);
+            }
+            // Check iframes
+            var iframes = root.querySelectorAll('iframe, webview');
+            for (var j = 0; j < iframes.length; j++) {
+                try {
+                    var frameDoc = iframes[j].contentDocument || (iframes[j].contentWindow && iframes[j].contentWindow.document);
+                    if (frameDoc) {
+                        results = results.concat(getAllClickables(frameDoc));
+                    }
+                } catch (_) {}
+            }
+            // Check shadow roots
+            var allEls = root.querySelectorAll('*');
+            for (var k = 0; k < allEls.length; k++) {
+                if (allEls[k].shadowRoot) {
+                    results = results.concat(getAllClickables(allEls[k].shadowRoot));
+                }
+            }
+        } catch (_) {}
+        return results;
+    }
+
     function isInsideAgentOrChat(el) {
         if (!el || !el.closest) return false;
-        return !!el.closest('.antigravity-agent-side-panel, [class*="agent-side-panel"], [class*="chat-panel"], [class*="antigravity"], .interactive-session, .chat-list, .notification-toast, .dialog-buttons, [role="dialog"], .monaco-dialog-box');
+        return !!el.closest('.antigravity-agent-side-panel, [class*="agent-side-panel"], [class*="chat-panel"], [class*="antigravity"], [class*="agent"], [class*="chat"], [class*="composer"], [class*="conversation"], .interactive-session, .chat-list, .notification-toast, .dialog-buttons, [role="dialog"], .monaco-dialog-box, .auxiliarybar, .sidebar, .part.sidebar, .part.auxiliarybar');
     }
 
     function isApprovalButton(btn) {
-        // Nếu nằm trong chat/agent panel hoặc dialog xác nhận, đây là nút hành động an toàn
         if (isInsideAgentOrChat(btn)) return true;
 
         var parent = btn.parentElement;
         if (!parent) return false;
-        for (var level = 0; level < 3; level++) {
+        for (var level = 0; level < 4; level++) {
             if (!parent) break;
-            var siblingBtns = parent.querySelectorAll('button, a.action-label, [role="button"], .monaco-button, span.bg-ide-button-background');
+            var siblingBtns = parent.querySelectorAll('button, a.action-label, [role="button"], .monaco-button, span.bg-ide-button-background, div[role="button"]');
             for (var i = 0; i < siblingBtns.length; i++) {
                 var sib = siblingBtns[i];
                 if (sib === btn) continue;
-                var sibText = (sib.innerText || '').trim();
+                var sibText = (sib.innerText || sib.textContent || '').trim();
                 for (var j = 0; j < REJECT_WORDS.length; j++) {
                     if (sibText.toLowerCase().indexOf(REJECT_WORDS[j].toLowerCase()) !== -1) {
                         return true;
@@ -225,6 +246,20 @@
             parent = parent.parentElement;
         }
         return false;
+    }
+
+    function simulateClick(el) {
+        if (!el) return;
+        try {
+            var opts = { bubbles: true, cancelable: true, view: window };
+            el.dispatchEvent(new PointerEvent('pointerdown', opts));
+            el.dispatchEvent(new MouseEvent('mousedown', opts));
+            el.dispatchEvent(new PointerEvent('pointerup', opts));
+            el.dispatchEvent(new MouseEvent('mouseup', opts));
+            el.click();
+        } catch (e) {
+            try { el.click(); } catch (_) {}
+        }
     }
 
     // Words in buttons that should NEVER be auto-clicked (editor/diff UI buttons)
@@ -240,17 +275,16 @@
     var autoClick = setInterval(function () {
         if (!window._agAutoEnabled) return;
 
-        var clickables = Array.from(document.querySelectorAll('button, a.action-label, [role="button"], .monaco-button'));
-        document.querySelectorAll('span.cursor-pointer').forEach(function (s) { clickables.push(s); });
+        var clickables = getAllClickables(document);
         var targetBtn = null;
         var matchedPattern = '';
         for (var i = 0; i < clickables.length; i++) {
             var b = clickables[i];
-            if (b.offsetParent === null) continue;
+            if (b.offsetParent === null && b.offsetWidth === 0 && b.offsetHeight === 0) continue;
             if (_clicked.has(b)) continue;
 
-            var text = (b.innerText || b.textContent || '').trim();
-            if (!text || text.length > 40) continue;
+            var text = (b.innerText || b.textContent || b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+            if (!text || text.length > 50) continue;
 
             // Skip diff/merge editor buttons — NEVER click these
             var skipEditor = false;
@@ -268,8 +302,7 @@
             )) continue;
 
             // Skip diff hunk buttons (inline accept/reject in editor) — NEVER auto-click these
-            if (b.classList && (b.classList.contains('diff-hunk-button') || b.classList.contains('accept') || b.classList.contains('revert'))) {
-                // Only skip if also inside editor area (has 'editor' anywhere in ancestor classes/ids)
+            if (b.classList && (b.classList.contains('diff-hunk-button') || b.classList.contains('revert'))) {
                 var editorAncestor = b.closest && b.closest('[class*="editor"], [id*="editor"]');
                 if (editorAncestor) continue;
             }
@@ -300,61 +333,58 @@
             }
         }
 
-        // --- SEPARATE Accept handling (chat-only, never via CLICK_PATTERNS) ---
-
+        // --- SEPARATE Accept handling (chat-only, approval prompts) ---
         if (!targetBtn && window._agAcceptChatOnly) {
             for (var ai = 0; ai < clickables.length; ai++) {
                 var ab = clickables[ai];
-                if (ab.offsetParent === null) continue;
+                if (ab.offsetParent === null && ab.offsetWidth === 0 && ab.offsetHeight === 0) continue;
                 if (_clicked.has(ab)) continue;
-                var aText = (ab.innerText || ab.textContent || '').trim();
+                var aText = (ab.innerText || ab.textContent || ab.getAttribute('aria-label') || '').trim();
 
                 var aClean = aText.replace(/[\r\n\t]+/g, ' ').replace(/\(.*?\)/g, '').trim();
                 var aCleanLower = aClean.toLowerCase();
 
-                // Must start with "Accept" or "Chấp nhận"
-                if (!aCleanLower.startsWith('accept') && !aCleanLower.startsWith('chấp nhận')) continue;
+                // Must start with "Accept" or "Chấp nhận" or "Chấp thuận"
+                if (!aCleanLower.startsWith('accept') && !aCleanLower.startsWith('chấp nhận') && !aCleanLower.startsWith('chấp thuận')) continue;
 
                 // Block known editor/bulk accept patterns (case-insensitive)
-                if (/^accept\s+(all|changes|incoming|current|both|combination)/i.test(aCleanLower)) continue;
+                if (/^accept\s+(changes|incoming|current|both|combination)/i.test(aCleanLower)) continue;
 
                 // BLOCK: skip if inside editor area
                 if (ab.closest && (
                     ab.closest('.editor-scrollable') ||
                     ab.closest('.monaco-diff-editor') ||
                     ab.closest('.view-zones') ||
-                    ab.closest('.merge-editor-view')
+                    ab.closest('.merge-editor-view') ||
+                    ab.closest('[id*="workbench.parts.editor"]')
                 )) {
-                    console.log('[AG Auto] ⛔ Accept BLOCKED (inside editor): [' + aText.substring(0, 20) + ']');
                     continue;
                 }
 
                 // Skip diff hunk buttons by CSS class
                 if (ab.classList && (ab.classList.contains('diff-hunk-button') || ab.classList.contains('revert'))) {
-                    console.log('[AG Auto] ⛔ Accept BLOCKED (diff-hunk class): [' + aText.substring(0, 20) + ']');
                     continue;
                 }
 
                 // PASSED all checks → click it
                 targetBtn = ab;
                 matchedPattern = 'Accept';
-                console.log('[AG Auto] ✅ Accept clicked in chat: [' + aText.substring(0, 25) + ']');
                 break;
             }
         }
 
         if (targetBtn) {
-            // Log click before executing
+            var btnLabel = (targetBtn.innerText || targetBtn.textContent || targetBtn.getAttribute('aria-label') || '').trim();
             try {
                 var _lx = new XMLHttpRequest();
                 _lx.open('POST', 'http://127.0.0.1:' + AG_HTTP_PORT + '/api/click-log', true);
                 _lx.setRequestHeader('Content-Type', 'application/json');
                 _lx.timeout = 3000;
-                _lx.send(JSON.stringify({ button: targetBtn.innerText.trim().substring(0, 100), pattern: matchedPattern }));
+                _lx.send(JSON.stringify({ button: btnLabel.substring(0, 100), pattern: matchedPattern }));
             } catch (_e) { }
-            console.log("[AG Auto] 🎯 Click: [" + targetBtn.innerText.trim() + "]");
+            console.log("[AG Auto] 🎯 Click: [" + btnLabel + "]");
             _clicked.add(targetBtn);
-            targetBtn.click();
+            simulateClick(targetBtn);
             // Track click in session delta (server will accumulate)
             _agSessionTotal++;
             if (!_agSessionStats[matchedPattern]) _agSessionStats[matchedPattern] = 0;
@@ -372,7 +402,7 @@
     var _agJustScrolled = new WeakSet(); // elements we just scrolled programmatically
     var BOTTOM_THRESHOLD = 150; // pixels from bottom to consider "at bottom"
 
-    var CHAT_SCROLL_SELECTOR = '.antigravity-agent-side-panel, [class*="agent-side-panel"], [class*="chat-panel"], [class*="antigravity"], [id*="antigravity.agent"], .interactive-session, .chat-list, .chat-scrollable';
+    var CHAT_SCROLL_SELECTOR = '.antigravity-agent-side-panel, [class*="agent-side-panel"], [class*="chat-panel"], [class*="antigravity"], [id*="antigravity.agent"], [class*="agent"], [class*="chat"], [class*="composer"], .interactive-session, .chat-list, .chat-scrollable';
 
     // --- 3. AUTO SCROLL ---
     var autoScroll = setInterval(function () {

@@ -63,7 +63,7 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     const accountTreeProvider = new AccountTreeProvider();
-    // vscode.window.registerTreeDataProvider('antigravityAccounts', accountTreeProvider);
+    vscode.window.registerTreeDataProvider('antigravityAccounts', accountTreeProvider);
 
     // --- Chạy ngầm 100%, không tự động mở panel làm phiền người dùng ---
     if (!context.globalState.get('hasShownWelcome')) {
@@ -989,7 +989,9 @@ export function activate(context: vscode.ExtensionContext) {
         updateStatusBar();
     });
 
-    let refreshAccountCommand = vscode.commands.registerCommand('antigravity-cockpit.refreshAccount', async (accountId: string) => {
+    let refreshAccountCommand = vscode.commands.registerCommand('antigravity-cockpit.refreshAccount', async (param: any) => {
+        const accountId = typeof param === 'string' ? param : (param?.accountId || '');
+        if (!accountId) { return; }
         try {
             await syncWithIdeAccount(); // 刷新前先主动侦测一次账号表更
             const account = AccountManager.loadAccount(accountId);

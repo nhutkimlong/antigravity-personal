@@ -3,22 +3,31 @@ import { AccountManager, Account, TokenInfo } from './accountManager';
 import { ProcessManager } from './processManager';
 import { DBManager } from './dbManager';
 
-export class AccountTreeProvider implements vscode.TreeDataProvider<AccountItem | QuotaItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<AccountItem | QuotaItem | undefined | void> = new vscode.EventEmitter<AccountItem | QuotaItem | undefined | void>();
-    readonly onDidChangeTreeData: vscode.Event<AccountItem | QuotaItem | undefined | void> = this._onDidChangeTreeData.event;
+export class AccountTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
+    readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | void> = this._onDidChangeTreeData.event;
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
     }
 
-    getTreeItem(element: AccountItem | QuotaItem): vscode.TreeItem {
+    getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
         return element;
     }
 
-    async getChildren(element?: AccountItem): Promise<(AccountItem | QuotaItem)[]> {
+    async getChildren(element?: AccountItem): Promise<(AccountItem | QuotaItem | vscode.TreeItem)[]> {
         if (!element) {
             // Root - List accounts
             const index = AccountManager.loadIndex();
+            if (!index.accounts || index.accounts.length === 0) {
+                const emptyItem = new vscode.TreeItem("Chưa có tài khoản (Click để mở Bảng điều khiển)");
+                emptyItem.iconPath = new vscode.ThemeIcon('info');
+                emptyItem.command = {
+                    command: 'antigravity-cockpit.openDashboard',
+                    title: 'Mở Bảng Điều Khiển'
+                };
+                return [emptyItem];
+            }
             return index.accounts.map(acc => {
                 const isCurrent = acc.id === index.current_account_id;
                 return new AccountItem(

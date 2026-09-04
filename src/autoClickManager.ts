@@ -108,12 +108,24 @@ export class AutoClickManager {
         'antigravity.terminalCommand.accept',
         'antigravity.acceptCompletion',
         'workbench.action.chat.acceptInput',
-        'interactive.acceptChanges'
+        'interactive.acceptChanges',
+        'chat.action.accept'
     ];
 
     public static activate(context: vscode.ExtensionContext): void {
         this._extensionContext = context;
         console.log('[AG Auto] AutoClickManager activating...');
+
+        const cfg = vscode.workspace.getConfiguration('ag-auto');
+        this._autoAcceptEnabled = cfg.get<boolean>('enabled', true);
+        this._httpScrollEnabled = cfg.get<boolean>('scrollEnabled', true);
+        const configPatterns = cfg.get<string[]>('clickPatterns', [
+            'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
+            'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
+            'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý'
+        ]);
+        const disabledPatterns = context.globalState.get<string[]>('disabledClickPatterns', []);
+        this._httpClickPatterns = configPatterns.filter(p => !disabledPatterns.includes(p));
 
         // Restore stats
         this._clickStats = context.globalState.get('clickStats', {});
@@ -204,6 +216,16 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         context.subscriptions.push(
             vscode.workspace.onDidChangeConfiguration(e => {
                 if (e.affectsConfiguration('ag-auto')) {
+                    const cfg = vscode.workspace.getConfiguration('ag-auto');
+                    this._autoAcceptEnabled = cfg.get<boolean>('enabled', true);
+                    this._httpScrollEnabled = cfg.get<boolean>('scrollEnabled', true);
+                    const configPatterns = cfg.get<string[]>('clickPatterns', [
+                        'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
+                        'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
+                        'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý'
+                    ]);
+                    const disabledPatterns = context.globalState.get<string[]>('disabledClickPatterns', []);
+                    this._httpClickPatterns = configPatterns.filter(p => !disabledPatterns.includes(p));
                     this.updateStatusBarItem();
                     this.writeConfigJson(context);
                 }
@@ -324,9 +346,14 @@ if ($global:clicked) { Write-Output 'CLICKED' }
         const pauseMs = config.get<number>('scrollPauseMs', 7000);
         const scrollMs = config.get<number>('scrollIntervalMs', 500);
         const clickMs = config.get<number>('clickIntervalMs', 1000);
-        const allPatterns = config.get<string[]>('clickPatterns', ['Allow', 'Always Allow', 'Run', 'Keep Waiting', 'Accept all', 'Accept']);
+        const allPatterns = config.get<string[]>('clickPatterns', [
+            'Allow', 'Always Allow', 'Allow Once', 'Run', 'Run in Terminal', 'Run Command', 'Keep Waiting',
+            'Accept', 'Accept all', 'Proceed', 'Continue', 'Retry',
+            'Cho phép', 'Luôn cho phép', 'Chạy', 'Tiếp tục', 'Thử lại', 'Chấp nhận', 'Chấp thuận', 'Đồng ý'
+        ]);
         const disabledPats = context.globalState.get<string[]>('disabledClickPatterns', []);
-        const patterns = allPatterns.filter(p => !disabledPats.includes(p) && p !== 'Accept');
+        const patterns = allPatterns.filter(p => !disabledPats.includes(p));
+        const acceptEnabled = allPatterns.some(p => p.toLowerCase().includes('accept') || p.includes('Chấp')) && !disabledPats.includes('Accept');
         const enabled = config.get<boolean>('enabled', true);
 
         // Path to media/autoScript.js
@@ -346,6 +373,7 @@ if ($global:clicked) { Write-Output 'CLICKED' }
             /\/\*\{\{CLICK_PATTERNS\}\}\*\/\[.*?\]/,
             JSON.stringify(patterns)
         );
+        script = script.replace(/\/\*\{\{ACCEPT_IN_CHAT_ONLY\}\}\*\/\w+/, acceptEnabled.toString());
         script = script.replace(/\/\*\{\{ENABLED\}\}\*\/\w+/, enabled.toString());
         script = script.replace(/\/\*\{\{CONFIG_PATH\}\}\*\//, configFilePath);
 
@@ -881,8 +909,11 @@ if ($global:clicked) { Write-Output 'CLICKED' }
 
     private static updateStatusBarItem(): void {
         if (!this._statusBarAccept || !this._statusBarScroll) return;
-        const acceptOn = this._autoAcceptEnabled;
-        const scrollOn = this._httpScrollEnabled;
+        const cfg = vscode.workspace.getConfiguration('ag-auto');
+        const acceptOn = cfg.get<boolean>('enabled', true);
+        const scrollOn = cfg.get<boolean>('scrollEnabled', true);
+        this._autoAcceptEnabled = acceptOn;
+        this._httpScrollEnabled = scrollOn;
 
         this._statusBarAccept.text = acceptOn ? '$(check) Accept ON' : '$(circle-slash) Accept OFF';
         this._statusBarAccept.color = acceptOn ? '#4EC9B0' : '#F44747';
