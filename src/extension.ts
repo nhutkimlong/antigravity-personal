@@ -442,8 +442,8 @@ export function activate(context: vscode.ExtensionContext) {
 
                 for (const group of groupsConfig.groups) {
                     // 找出该分组中的模型 (group.models 是模型名称字符串数组)
-                    const groupModels = quota.models.filter((m: any) =>
-                        group.models.includes(m.name)
+                    const groupModels = (quota.models || []).filter((m: any) =>
+                        Array.isArray(group.models) && group.models.includes(m.name)
                     );
 
                     if (groupModels.length > 0) {
@@ -499,7 +499,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 if (groupsConfig && groupsConfig.groups && groupsConfig.groups.length > 0) {
                     groupsConfig.groups.forEach((group: any, index: number) => {
-                        const groupModels = quota.models.filter((m: any) => group.models.includes(m.name));
+                        const groupModels = (quota.models || []).filter((m: any) => Array.isArray(group.models) && group.models.includes(m.name));
                         if (groupModels.length > 0) {
                             groupModels.forEach((m: any) => itemsToRender.push({ model: m }));
                         }

@@ -186,6 +186,15 @@ export class ModelGroupManager {
             if (!raw.version || (Array.isArray(raw.groups) && raw.groups.some((g: any) => !g.officialName))) {
                 return this.migrateOldConfig(raw);
             }
+            if (Array.isArray(raw.groups)) {
+                for (const g of raw.groups) {
+                    if (!Array.isArray(g.models)) {
+                        g.models = [];
+                    }
+                }
+            } else {
+                raw.groups = [];
+            }
             return raw;
         } catch (e) {
             console.error('[ModelGroupManager] Failed to load model groups', e);
@@ -311,6 +320,9 @@ export class ModelGroupManager {
                 const isGemini = lower.startsWith('gemini') || lower.includes('gemini');
 
                 for (const group of config.groups) {
+                    if (!Array.isArray(group.models)) {
+                        group.models = [];
+                    }
                     const gname = (group.officialName || group.name).toLowerCase();
                     const match = isClaudeOrGpt
                         ? (gname.includes('claude') || gname.includes('gpt') || gname.includes('3p'))
@@ -428,10 +440,11 @@ export class ModelGroupManager {
         return {
             ...config,
             groups: config.groups.map(g => {
-                if (g.id === groupId && !g.models.includes(modelName)) {
-                    return { ...g, models: [...g.models, modelName], updatedAt: Date.now() };
+                const currentModels = Array.isArray(g.models) ? g.models : [];
+                if (g.id === groupId && !currentModels.includes(modelName)) {
+                    return { ...g, models: [...currentModels, modelName], updatedAt: Date.now() };
                 }
-                return g;
+                return { ...g, models: currentModels };
             })
         };
     }
@@ -440,10 +453,11 @@ export class ModelGroupManager {
         return {
             ...config,
             groups: config.groups.map(g => {
+                const currentModels = Array.isArray(g.models) ? g.models : [];
                 if (g.id === groupId) {
-                    return { ...g, models: g.models.filter(m => m !== modelName), updatedAt: Date.now() };
+                    return { ...g, models: currentModels.filter(m => m !== modelName), updatedAt: Date.now() };
                 }
-                return g;
+                return { ...g, models: currentModels };
             })
         };
     }
@@ -560,6 +574,10 @@ export class ModelGroupManager {
                         updatedAt: now
                     };
                     config.groups.push(targetGroup);
+                }
+
+                if (!Array.isArray(targetGroup.models)) {
+                    targetGroup.models = [];
                 }
 
                 if (!targetGroup.models.includes(model.name)) {

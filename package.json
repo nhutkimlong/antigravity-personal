@@ -340,6 +340,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "package": "vsce package --no-git-tag-version",
     "diagnose:vscdb": "node ./scripts/diagnose_vscdb_account_keys.js",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",

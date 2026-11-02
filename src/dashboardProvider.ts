@@ -1374,8 +1374,8 @@ export class DashboardProvider {
                     // 获取已分组的模型集合
                     function getGroupedModels() {
                         const grouped = new Set();
-                        groupsConfig.groups.forEach(g => {
-                            g.models.forEach(m => grouped.add(m));
+                        (groupsConfig?.groups || []).forEach(g => {
+                            (g.models || []).forEach(m => grouped.add(m));
                         });
                         return grouped;
                     }
@@ -1502,7 +1502,7 @@ export class DashboardProvider {
                             let minPercentage = 101;
                             let found = false;
                             if (acc.quota && acc.quota.models) {
-                                group.models.forEach(modelName => {
+                                (group.models || []).forEach(modelName => {
                                     const m = acc.quota.models.find(x => x.name === modelName);
                                     if (m) {
                                         minPercentage = Math.min(minPercentage, m.percentage);
@@ -1604,7 +1604,7 @@ export class DashboardProvider {
                                     groupsConfig.groups.forEach((group, index) => {
                                         const groupModels = [];
                                         if (acc.quota && acc.quota.models) {
-                                            group.models.forEach(modelName => {
+                                            (group.models || []).forEach(modelName => {
                                                 const m = acc.quota.models.find(x => x.name === modelName);
                                                 if (m) groupModels.push(m);
                                             });
@@ -1666,7 +1666,7 @@ export class DashboardProvider {
                                     let found = false;
                                     
                                     if (acc.quota && acc.quota.models) {
-                                        group.models.forEach(modelName => {
+                                        (group.models || []).forEach(modelName => {
                                             const m = acc.quota.models.find(x => x.name === modelName);
                                             if (m) {
                                                 minPercentage = Math.min(minPercentage, m.percentage);
@@ -1942,7 +1942,7 @@ function renderGroupsList() {
                                     <button class="group-danger" onclick="deleteGroup('\${group.id}')" title="\${msg('deleteBtn')}">\${msg('deleteBtn')}</button>
                                 </div>
                                 <div class="model-tags">
-                                    \${group.models.map(modelName => \`
+                                    \${(group.models || []).map(modelName => \`
                                         <div class="model-tag">
                                             <span>\${modelName}</span>
                                             <span class="model-tag-remove" onclick="removeModelFromGroup('\${group.id}', '\${modelName}')">&times;</span>
@@ -1951,14 +1951,14 @@ function renderGroupsList() {
                                     <div class="model-dropdown">
                                         <button class="add-model-btn" onclick="toggleModelDropdown('\${group.id}', event)">\${msg('addModelBtn')}</button>
                                         <div class="model-dropdown-content" id="dropdown-\${group.id}">
-                                            \${allModels.filter(m => !group.models.includes(m.name)).map(m => \`
-                                                <div class="model-dropdown-item \${groupedModels.has(m.name) && !group.models.includes(m.name) ? 'disabled' : ''}" 
-                                                    onclick="\${groupedModels.has(m.name) && !group.models.includes(m.name) ? '' : \`addModelToGroup('\${group.id}', '\${m.name}')\`}">
+                                            \${allModels.filter(m => !(group.models || []).includes(m.name)).map(m => \`
+                                                <div class="model-dropdown-item \${groupedModels.has(m.name) && !(group.models || []).includes(m.name) ? 'disabled' : ''}" 
+                                                    onclick="\${groupedModels.has(m.name) && !(group.models || []).includes(m.name) ? '' : \`addModelToGroup('\${group.id}', '\${m.name}')\`}">
                                                     \${m.name}
                                                     \${groupedModels.has(m.name) ? ' (已在其他分组)' : ''}
                                                 </div>
                                             \`).join('')}
-                                            \${allModels.filter(m => !group.models.includes(m.name)).length === 0 ? '<div class="model-dropdown-item" style="opacity: 0.5">没有可添加的模型</div>' : ''}
+                                            \${allModels.filter(m => !(group.models || []).includes(m.name)).length === 0 ? '<div class="model-dropdown-item" style="opacity: 0.5">没有可添加的模型</div>' : ''}
                                         </div>
                                     </div>
                                 </div>
