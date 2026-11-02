@@ -18,8 +18,15 @@ export const LOAD_CODE_ASSIST_ENDPOINTS = [
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 ];
 
+export const QUOTA_SUMMARY_ENDPOINTS = [
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+];
+
 export const QUOTA_API_URL = QUOTA_API_ENDPOINTS[0];
 export const LOAD_CODE_ASSIST_URL = LOAD_CODE_ASSIST_ENDPOINTS[0];
+export const QUOTA_SUMMARY_URL = QUOTA_SUMMARY_ENDPOINTS[0];
 
 /** 旧配置目录（保留兼容，仅用于迁移检测） */
 export const OLD_DATA_DIR = path.join(os.homedir(), ".antigravity_tools");
@@ -74,50 +81,100 @@ function copyDirRecursive(src: string, dest: string): void {
     }
 }
 
+export interface DbCandidate {
+    client: 'ide' | 'app_cli';
+    name: string;
+    path: string;
+    exists: boolean;
+}
+
+/**
+ * 获取指定客户端类型的候选数据库路径列表
+ * 规则：
+ * - 如果提供了 overridePath，优先仅使用 overridePath
+ * - target === 'ide': 包含 IDE 2.6+ 共享目录 (Antigravity) 与旧版 IDE 目录 (Antigravity IDE <= 2.5.5)
+ * - target === 'app_cli': 包含 Antigravity 工具端/桌面端路径
+ * - target === 'all' (默认): 包含两者
+ */
+export function getAntigravityDbCandidates(target: 'all' | 'ide' | 'app_cli' = 'all', overridePath?: string): DbCandidate[] {
+    if (overridePath && overridePath.trim()) {
+        const p = overridePath.trim();
+        return [{
+            client: 'ide',
+            name: 'Override DB',
+            path: p,
+            exists: fs.existsSync(p)
+        }];
+    }
+
+    const platform = os.platform();
+    const candidates: DbCandidate[] = [];
+    let sharedPath = '';
+    let legacyIdePath = '';
+
+    if (platform === 'win32') {
+        const appData = process.env.APPDATA || '';
+        sharedPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
+        legacyIdePath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+    } else if (platform === 'darwin') {
+        const home = os.homedir();
+        sharedPath = path.join(home, 'Library', 'Application Support', 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
+        legacyIdePath = path.join(home, 'Library', 'Application Support', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+    } else {
+        const home = os.homedir();
+        sharedPath = path.join(home, '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
+        legacyIdePath = path.join(home, '.config', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+    }
+
+    if (target === 'all') {
+        candidates.push({ client: 'ide', name: 'Antigravity (IDE 2.6+ & Desktop)', path: sharedPath, exists: fs.existsSync(sharedPath) });
+        candidates.push({ client: 'ide', name: 'Antigravity IDE (Legacy <= 2.5.5)', path: legacyIdePath, exists: fs.existsSync(legacyIdePath) });
+    } else if (target === 'ide') {
+        candidates.push({ client: 'ide', name: 'Antigravity (IDE 2.6+)', path: sharedPath, exists: fs.existsSync(sharedPath) });
+        candidates.push({ client: 'ide', name: 'Antigravity IDE (Legacy <= 2.5.5)', path: legacyIdePath, exists: fs.existsSync(legacyIdePath) });
+    } else if (target === 'app_cli') {
+        candidates.push({ client: 'app_cli', name: 'Antigravity Desktop/Tool', path: sharedPath, exists: fs.existsSync(sharedPath) });
+    }
+
+    return candidates;
+}
+
+/**
+ * 获取符合条件且实际存在的数据库路径列表。
+ * 如果都不存在，在 target 为 'all' 或包含该客户端时，返回默认的主候选路径以防报错。
+ */
+export function getActiveDbPaths(target: 'all' | 'ide' | 'app_cli' = 'all', overridePath?: string): string[] {
+    const candidates = getAntigravityDbCandidates(target, overridePath);
+    const existing = candidates.filter(c => c.exists).map(c => c.path);
+    if (existing.length > 0) {
+        return existing;
+    }
+    return candidates.length > 0 ? [candidates[0].path] : [getVSCDBPath(overridePath, target)];
+}
+
 /**
  * 获取 Antigravity IDE 的全局状态数据库路径
  * @param overridePath 配置中的覆盖路径（可选）
+ * @param target 目标客户端（可选）
  * @returns 数据库文件路径
  */
-export function getVSCDBPath(overridePath?: string): string {
+export function getVSCDBPath(overridePath?: string, target: 'all' | 'ide' | 'app_cli' = 'all'): string {
     if (overridePath && overridePath.trim()) {
         return overridePath.trim();
     }
 
-    const platform = os.platform();
-
-    if (platform === 'win32') {
-        const appData = process.env.APPDATA || '';
-        const newPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-        const oldPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
-        
-        if (fs.existsSync(newPath)) return newPath;
-        if (fs.existsSync(oldPath)) return oldPath;
-        return newPath;
+    const candidates = getAntigravityDbCandidates(target);
+    const found = candidates.find(c => c.exists);
+    if (found) {
+        return found.path;
     }
 
-    if (platform === 'darwin') {
-        const home = os.homedir();
-        const newPath = path.join(home, 'Library', 'Application Support', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-        const oldPath = path.join(home, 'Library', 'Application Support', 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
-        
-        if (fs.existsSync(newPath)) return newPath;
-        if (fs.existsSync(oldPath)) return oldPath;
-        return newPath;
-    }
-
-    // Linux / 其他类 Unix
-    const home = os.homedir();
-    const newPath = path.join(home, '.config', 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-    const oldPath = path.join(home, '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
-    
-    if (fs.existsSync(newPath)) return newPath;
-    if (fs.existsSync(oldPath)) return oldPath;
-    return newPath;
+    return candidates.length > 0 ? candidates[0].path : '';
 }
 
 // 向后兼容：保留常量导出（使用默认路径）
 export const VSCDB_PATH = getVSCDBPath();
+export const CLI_SESSION_PATH = path.join(os.homedir(), '.gemini', 'jetski-standalone-oauth-token');
 
 export const IMPORTANT_MODELS = ["gemini", "claude", "gpt"];
 export const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";

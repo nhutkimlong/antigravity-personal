@@ -2,7 +2,7 @@
   "name": "antigravity-personal",
   "displayName": "Antigravity Personal Extension",
   "description": "Personal extension for Google Antigravity: Multi-account model manager with Auto-Accept & Auto-Scroll",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "Personal",
   "icon": "resources/icon.png",
   "repository": {
@@ -189,6 +189,21 @@
             ],
             "default": "advanced",
             "description": "%config.switchMode.description%"
+          },
+          "antigravity-cockpit.targetClient": {
+            "type": "string",
+            "enum": [
+              "all",
+              "ide",
+              "app_cli"
+            ],
+            "enumDescriptions": [
+              "Đồng bộ tất cả (Antigravity IDE + Antigravity 2.0 / CLI)",
+              "Chỉ đồng bộ Antigravity IDE",
+              "Chỉ đồng bộ Antigravity 2.0 / CLI"
+            ],
+            "default": "all",
+            "description": "Mục tiêu đồng bộ tài khoản và quota (IDE, App 2.0/CLI hoặc Tất cả)."
           },
           "antigravity-cockpit.databasePathOverride": {
             "type": "string",

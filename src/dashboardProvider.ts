@@ -593,6 +593,38 @@ export class DashboardProvider {
                     .quota-meta span:last-child {
                         font-weight: 500;
                     }
+                    .quota-row {
+                        margin-top: 6px;
+                    }
+                    .quota-row-header {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        font-size: 11px;
+                        font-weight: 600;
+                        margin-bottom: 3px;
+                    }
+                    .quota-row-label {
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 4px;
+                        opacity: 0.85;
+                    }
+                    .quota-row-value {
+                        font-family: 'Consolas', 'Courier New', monospace;
+                        font-size: 11px;
+                    }
+                    .quota-row-meta {
+                        display: flex;
+                        justify-content: space-between;
+                        font-size: 10px;
+                        color: var(--text-secondary);
+                        margin-top: 2px;
+                    }
+                    .progress-bar.mini {
+                        height: 6px;
+                        margin-bottom: 4px;
+                    }
 
                     /* Buttons */
                     .btn-group {
@@ -1751,24 +1783,69 @@ function render() {
                                     </div>\`;
                             } else if (acc.quota && !acc.quota.is_forbidden) {
                                 quotaHtml = '<div class="quota-grid">' + acc.quota.models.map(m => {
-                                    // 更智能的颜色策略
-                                    let color = '#4ade80'; // 绿色 (足够)
-                                    if (m.percentage <= 20) color = '#f87171'; // 红色 (告急)
-                                    else if (m.percentage <= 50) color = '#fbbf24'; // 黄色 (注意)
+                                    // Tuần / Weekly
+                                    let weeklyPct = m.weekly_percentage !== undefined ? m.weekly_percentage : m.percentage;
+                                    let colorWeekly = '#4ade80';
+                                    if (weeklyPct <= 20) colorWeekly = '#f87171';
+                                    else if (weeklyPct <= 50) colorWeekly = '#fbbf24';
+                                    let fillWeekly = Math.max(0, Math.min(100, weeklyPct));
+                                    let resetWeeklyText = m.weekly_reset_time || m.reset_time || '-';
+
+                                    // 5H Limit
+                                    let row5hHtml = '';
+                                    if (m.has_5h) {
+                                        let color5h = '#4ade80';
+                                        if (m.percentage <= 20) color5h = '#f87171';
+                                        else if (m.percentage <= 50) color5h = '#fbbf24';
+                                        let fill5h = Math.max(0, Math.min(100, m.percentage));
+                                        const rawReset5h = m.reset_time_raw || m.reset_time;
+                                        const isOverdue5h = rawReset5h && !isNaN(new Date(rawReset5h).getTime()) && (new Date(rawReset5h).getTime() <= Date.now());
+                                        const overdueTitle5h = isOverdue5h ? ' title="Đã đến thời gian reset, bấm làm mới để cập nhật"' : '';
+                                        const reset5hText = isOverdue5h ? ((m.reset_time || '-') + ' ⚡') : (m.reset_time || '-');
+
+                                        row5hHtml = \`
+                                            <div class="quota-row">
+                                                <div class="quota-row-header">
+                                                    <span class="quota-row-label">⚡ 5H Limit</span>
+                                                    <span class="quota-row-value" style="color:\${color5h}">\${m.percentage}%</span>
+                                                </div>
+                                                <div class="progress-bar mini">
+                                                    <div class="progress-fill" style="width:\${fill5h}%; background:\${color5h}; box-shadow:0 0 8px \${color5h}44"></div>
+                                                </div>
+                                                <div class="quota-row-meta">
+                                                    <span>\${msg('reset')}</span>
+                                                    <span\${overdueTitle5h}>\${reset5hText}</span>
+                                                </div>
+                                            </div>
+                                        \`;
+                                    }
+
+                                    const rowWeeklyHtml = \`
+                                        <div class="quota-row">
+                                            <div class="quota-row-header">
+                                                <span class="quota-row-label">📅 Weekly</span>
+                                                <span class="quota-row-value" style="color:\${colorWeekly}">\${weeklyPct}%</span>
+                                            </div>
+                                            <div class="progress-bar mini">
+                                                <div class="progress-fill" style="width:\${fillWeekly}%; background:\${colorWeekly}; box-shadow:0 0 8px \${colorWeekly}44"></div>
+                                            </div>
+                                            <div class="quota-row-meta">
+                                                <span>\${msg('reset')}</span>
+                                                <span>\${resetWeeklyText}</span>
+                                            </div>
+                                        </div>
+                                    \`;
+
+                                    const displayName = m.displayName || m.name;
 
                                     return \`
                                         <div class="quota-card">
                                             <div class="quota-header">
-                                                <span>\${m.name}</span>
-                                                <span style="color: \${color}">\${m.percentage}%</span>
+                                                <span style="font-weight:600; font-size:13px;" title="\${m.name}">\${displayName}</span>
+                                                <span style="color:\${colorWeekly}; font-size:11px; opacity:0.85;">\${weeklyPct}%</span>
                                             </div>
-                                            <div class="progress-bar">
-                                                <div class="progress-fill" style="width: \${m.percentage}%; background: \${color}; box-shadow: 0 0 10px \${color}44"></div>
-                                            </div>
-                                            <div class="quota-meta">
-                                                <span>\${msg('reset')}</span>
-                                                <span>\${m.reset_time || '-'}</span>
-                                            </div>
+                                            \${row5hHtml}
+                                            \${rowWeeklyHtml}
                                         </div>
                                     \`;
                                 }).join('') + '</div>';

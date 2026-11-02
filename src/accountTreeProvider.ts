@@ -1,7 +1,5 @@
 import * as vscode from 'vscode';
-import { AccountManager, Account, TokenInfo } from './accountManager';
-import { ProcessManager } from './processManager';
-import { DBManager } from './dbManager';
+import { AccountManager } from './accountManager';
 
 export class AccountTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | void>();
@@ -61,7 +59,15 @@ export class AccountTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
                     return [new QuotaItem("Forbidden", "No access", vscode.TreeItemCollapsibleState.None)];
                 }
 
-                return quota.models.map((m: any) => new QuotaItem(m.name, `${m.percentage}%`, vscode.TreeItemCollapsibleState.None));
+                return quota.models.map((m: any) => {
+                    const label = m.displayName || m.name;
+                    const weeklyText = m.has_weekly ? `Tuần: ${m.weekly_percentage}%` : '';
+                    const fiveHText = m.has_5h ? `5H: ${m.percentage}%` : `${m.percentage}%`;
+                    const desc = m.has_weekly && m.has_5h ? `${fiveHText} | ${weeklyText}` : `${m.percentage}%`;
+                    const tooltip = `${label}\n- Hạn mức 5H: ${m.percentage}% (Reset: ${m.reset_time || '-'})\n` +
+                                    (m.has_weekly ? `- Hạn mức Tuần: ${m.weekly_percentage}% (Reset: ${m.weekly_reset_time || '-'})\n` : '');
+                    return new QuotaItem(label, desc, vscode.TreeItemCollapsibleState.None, m.percentage, tooltip);
+                });
             } catch (e) {
                 return [new QuotaItem("Error", (e as Error).message, vscode.TreeItemCollapsibleState.None)];
             }
@@ -93,13 +99,15 @@ class QuotaItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
         public readonly percentage: string,
-        public readonly collapsibleState: vscode.TreeItemCollapsibleState
+        public readonly collapsibleState: vscode.TreeItemCollapsibleState,
+        numericPct?: number,
+        customTooltip?: string
     ) {
         super(label, collapsibleState);
         this.description = percentage;
-        this.tooltip = `${label}: ${percentage}`;
+        this.tooltip = customTooltip || `${label}: ${percentage}`;
 
-        const num = parseInt(percentage);
+        const num = numericPct !== undefined ? numericPct : parseInt(percentage);
         if (!isNaN(num)) {
             if (num > 50) {
                 this.iconPath = new vscode.ThemeIcon('circle-filled', new vscode.ThemeColor('charts.green'));

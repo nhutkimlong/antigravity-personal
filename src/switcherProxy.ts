@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, execSync } from 'child_process';
-import { getVSCDBPath } from './constants';
+import { getVSCDBPath, getActiveDbPaths, CLI_SESSION_PATH } from './constants';
 import { t } from './i18n';
 export interface EnvironmentCheckResult {
     success: boolean;
@@ -374,18 +374,17 @@ export class SwitcherProxy {
         email: string,
         dbPathOverride?: string,
         exePathOverride?: { win32?: string; darwin?: string; linux?: string },
-        processWaitSeconds: number = 10
+        processWaitSeconds: number = 10,
+        targetClient: 'all' | 'ide' | 'app_cli' = 'all'
     ) {
         const tempDir = os.tmpdir();
         const timestamp = Date.now();
         const mainScriptPath = path.join(tempDir, `ag_switch_${timestamp}.js`);
         const logPath = path.join(tempDir, `ag_switch_${timestamp}.log`);
-
         // 获取 extension 根目录下的 node_modules 路径
         const extensionRoot = path.join(__dirname, '..');
         const nodeModulesPath = path.join(extensionRoot, 'node_modules');
         const platform = os.platform();
-
         // 获取 Node.js 可执行文件路径
         // process.execPath 在 Electron 应用中返回的是 Electron 可执行文件，不是 Node.js
         // 需要找到系统中的 Node.js
@@ -400,14 +399,12 @@ export class SwitcherProxy {
                 'C:\\Program Files\\nodejs\\node.exe',
                 'C:\\nodejs\\node.exe',
             ];
-
             for (const p of possibleNodePaths) {
                 if (fs.existsSync(p)) {
                     nodeExe = p;
                     break;
                 }
             }
-
             // 如果找不到，尝试使用 where 命令
             if (!nodeExe) {
                 try {
@@ -416,28 +413,26 @@ export class SwitcherProxy {
                     if (lines.length > 0 && fs.existsSync(lines[0].trim())) {
                         nodeExe = lines[0].trim();
                     }
-                } catch (e) {
+                }
+                catch (e) {
                     // 忽略
                 }
             }
-        } else {
+        }
+        else {
             // Linux/macOS: 使用 which 命令
             try {
                 nodeExe = execSync('which node', { encoding: 'utf-8' }).trim();
-            } catch (e) {
+            }
+            catch (e) {
                 nodeExe = '/usr/bin/node';
             }
         }
-
         if (!nodeExe || !fs.existsSync(nodeExe)) {
             throw new Error('Cannot find Node.js executable');
         }
-
-        // 获取实际使用的数据库路径
-        const actualDbPath = dbPathOverride && dbPathOverride.trim()
-            ? dbPathOverride.trim()
-            : getVSCDBPath();
-
+        // 获取实际使用的所有目标数据库路径列表 (协同更新 IDE 与 2.6+ 工具目录)
+        const targetDbPaths = getActiveDbPaths(targetClient, dbPathOverride);
         // 生成跨平台的独立 Node.js 脚本
         const mainScriptContent = `
 const fs = require('fs');
@@ -446,7 +441,8 @@ const { execSync, spawn } = require('child_process');
 
 // === 配置 ===
 const LOG_PATH = ${JSON.stringify(logPath)};
-const DB_PATH = ${JSON.stringify(actualDbPath)};
+const DB_PATHS = ${JSON.stringify(targetDbPaths)};
+const CLI_SESSION_PATH = ${JSON.stringify(CLI_SESSION_PATH)};
 const NODE_MODULES = ${JSON.stringify(nodeModulesPath)};
 const SQL_JS_PATH = path.join(NODE_MODULES, 'sql.js');
 const ACCESS_TOKEN = ${JSON.stringify(accessToken)};
@@ -507,6 +503,14 @@ function killAllAntigravity() {
                 log('taskkill Antigravity.exe 完成（可能没有运行中的进程）: ' + (e.message || ''));
             }
             try {
+                execSync('taskkill /F /IM "Antigravity.exe" /T 2>nul', { 
+                    encoding: 'utf-8', 
+                    shell: true, 
+                    windowsHide: true,
+                    timeout: 10000
+                });
+            } catch (e) {}
+            try {
                 execSync('taskkill /F /IM "Antigravity IDE.exe" /T 2>nul', { 
                     encoding: 'utf-8', 
                     shell: true, 
@@ -533,17 +537,12 @@ function killAllAntigravity() {
 }
 
 // === 等待进程完全退出 ===
-async function waitForProcessExit(maxWaitMs = 4000) {
-    log('正在检测并等待 Antigravity IDE 进程完全退出...');
-    const startTime = Date.now();
-    while (Date.now() - startTime < maxWaitMs) {
-        if (!isAntigravityRunning()) {
-            log('IDE 进程已完全退出 (耗时 ' + (Date.now() - startTime) + 'ms)');
-            return true;
-        }
-        await sleep(200);
-    }
-    log('等待超时 (' + maxWaitMs + 'ms)，继续执行注入流程');
+async function waitForProcessExit(maxWaitSec = 30) {
+    log('等待 Antigravity IDE 进程退出...');
+    // 简化：直接等待固定时间，避免 execSync 在 VBScript 进程中卡住
+    log('等待 ' + maxWaitSec + ' 秒让进程完全退出...');
+    await sleep(maxWaitSec * 1000);
+    log('等待完成，假设 IDE 进程已退出');
     return true;
 }
 // === Protobuf 编解码 ===
@@ -628,6 +627,22 @@ function createOldFormatField(at, rt, exp) {
     return encodeLenDelim(6, info);
 }
 
+function createMinimalUserStatusPayload(email) {
+    return Buffer.concat([
+        encodeStringField(3, email),
+        encodeStringField(7, email)
+    ]);
+}
+
+function createUnifiedStateEntry(sentinelKey, payload) {
+    const payloadB64 = payload.toString('base64');
+    const inner2 = encodeStringField(1, payloadB64);
+    const inner1 = encodeStringField(1, sentinelKey);
+    const inner = Buffer.concat([inner1, encodeLenDelim(2, inner2)]);
+    const outer = encodeLenDelim(1, inner);
+    return outer.toString('base64');
+}
+
 // === 备份清理函数 ===
 function cleanOldBackups(dbPath, maxBackups = 5) {
     try {
@@ -679,117 +694,227 @@ async function loadSqlJs() {
     return SQL;
 }
 
-// === 注入 Token ===
-async function injectToken() {
-    log('开始注入 Token 到数据库...');
+// === 注入单个数据库 ===
+async function injectTokenToSingleDb(dbPath, SQL) {
+    log('开始注入 Token 到数据库: ' + dbPath);
     
-    if (!fs.existsSync(DB_PATH)) {
-        log('错误: 数据库文件不存在: ' + DB_PATH);
-        return false;
+    if (!fs.existsSync(dbPath)) {
+        log('跳过: 数据库文件不存在: ' + dbPath);
+        return { success: false, skipped: true, dbPath };
     }
     
     let backupPath = '';
     try {
-        try {
-            backupPath = DB_PATH + '.ag-backup-' + Date.now();
-            fs.copyFileSync(DB_PATH, backupPath);
-            log('已创建数据库备份: ' + backupPath);
-            
-            // 限制最多 5 次备份，删除其余过旧的
-            cleanOldBackups(DB_PATH, 5);
-        } catch (e) {
-            log('创建或清理数据库备份失败（将继续尝试注入）: ' + (e.message || e));
-        }
+        backupPath = dbPath + '.ag-backup-' + Date.now();
+        fs.copyFileSync(dbPath, backupPath);
+        log('已创建数据库备份: ' + backupPath);
+        cleanOldBackups(dbPath, 5);
+    } catch (e) {
+        log('创建或清理数据库备份失败（将继续尝试注入）: ' + (e.message || e));
+    }
 
-        // 加载 sql.js (纯 WASM，无原生模块兼容性问题)
-        const SQL = await loadSqlJs();
-        const dbBuffer = fs.readFileSync(DB_PATH);
-        
-        // SQLite 头部魔数魔数防 WASM 崩溃的前置合法性拦截
+    try {
+        const dbBuffer = fs.readFileSync(dbPath);
         if (dbBuffer.length > 0) {
             const magic = dbBuffer.toString('utf-8', 0, 15);
             if (!magic.startsWith('SQLite format 3')) {
-                throw new Error('数据库文件损坏或非 SQLite 3 格式');
+                throw new Error('数据库文件损坏或非 SQLite 3 格式: ' + dbPath);
             }
         } else {
-            throw new Error('数据库文件大小为 0');
+            throw new Error('数据库文件大小为 0: ' + dbPath);
         }
 
         const db = new SQL.Database(dbBuffer);
-        
         const KEY_OLD = 'jetskiStateSync.agentManagerInitState';
         const KEY_NEW = 'antigravityUnifiedStateSync.oauthToken';
         const KEY_ONBOARD = 'antigravityOnboarding';
         
-        // 1. 新格式注入
+        // 1. 新格式注入 (oauthToken)
         try {
             const oauthInfo = createOAuthInfo(ACCESS_TOKEN, REFRESH_TOKEN, EXPIRY);
-            const oauthInfoB64 = oauthInfo.toString('base64');
-            const inner2 = encodeStringField(1, oauthInfoB64);
-            const inner1 = encodeStringField(1, "oauthTokenInfoSentinelKey");
-            const inner = Buffer.concat([inner1, encodeLenDelim(2, inner2)]);
-            const outer = encodeLenDelim(1, inner);
-            const outerB64 = outer.toString('base64');
-            
-            db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [KEY_NEW, outerB64]);
-            log('新格式注入成功');
+            const oauthTokenB64 = createUnifiedStateEntry("oauthTokenInfoSentinelKey", oauthInfo);
+            db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [KEY_NEW, oauthTokenB64]);
+            log('[' + path.basename(path.dirname(path.dirname(path.dirname(dbPath)))) + '] 新格式 oauthToken 注入成功');
         } catch (e) {
             log('新格式注入异常: ' + e.message);
         }
 
-        // 2. 旧格式注入
+        // 2. 注入 userStatus (Antigravity 2.6+ 认证链路强依赖)
         try {
-            const stmt = db.prepare("SELECT value FROM ItemTable WHERE key = ?");
-            stmt.bind([KEY_OLD]);
-            if (stmt.step()) {
-                const row = stmt.getAsObject();
-                const blob = Buffer.from(row.value, 'base64');
-                let clean = removeField(blob, 1); // 移除 UserID
-                clean = removeField(clean, 2); // 移除 Email
-                clean = removeField(clean, 6); // 移除 OAuthTokenInfo
-                
-                const emailField = createEmailField(EMAIL);
-                const tokenField = createOldFormatField(ACCESS_TOKEN, REFRESH_TOKEN, EXPIRY);
-                const finalB64 = Buffer.concat([clean, emailField, tokenField]).toString('base64');
-                
-                db.run("UPDATE ItemTable SET value = ? WHERE key = ?", [finalB64, KEY_OLD]);
-                log('旧格式注入成功');
-            } else {
-                log('旧格式跳过: key 不存在');
-            }
-            stmt.free();
+            const userStatusPayload = createMinimalUserStatusPayload(EMAIL);
+            const userStatusB64 = createUnifiedStateEntry("userStatusSentinelKey", userStatusPayload);
+            db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", ["antigravityUnifiedStateSync.userStatus", userStatusB64]);
+            log('[' + path.basename(path.dirname(path.dirname(path.dirname(dbPath)))) + '] userStatus 注入成功');
         } catch (e) {
-            log('旧格式注入异常: ' + e.message);
+            log('userStatus 注入异常: ' + e.message);
         }
 
-        // 3. Onboarding 标记
+        // 3. 彻底删除旧版 agentManagerInitState，防止 IDE 读取旧 UserID 导致状态冲突
+        try {
+            db.run("DELETE FROM ItemTable WHERE key = ?", [KEY_OLD]);
+        } catch (e) {}
+
+        // 4. Onboarding 标记
         db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [KEY_ONBOARD, "true"]);
         
-        // 4. 擦除旧账号可能残留的冲突缓存键，迫使新版 IDE 启动时使用新 Token 触发自愈拉取与状态重建
+        // 5. 擦除旧账号残留缓存键，迫使启动时使用新凭据触发自愈拉取
         db.run("DELETE FROM ItemTable WHERE key = ?", ["antigravityAuthStatus"]);
-        db.run("DELETE FROM ItemTable WHERE key = ?", ["antigravityUnifiedStateSync.userStatus"]);
         
         // 写回磁盘
         const data = db.export();
         const buffer = Buffer.from(data);
-        fs.writeFileSync(DB_PATH, buffer);
-        log('数据库写回磁盘成功');
+        fs.writeFileSync(dbPath, buffer);
+        log('[' + path.basename(path.dirname(path.dirname(path.dirname(dbPath)))) + '] 数据库写回磁盘成功');
         
         db.close();
-        return true;
+        return { success: true, backupPath, dbPath };
     } catch (e) {
         log('注入流程异常: ' + e.message);
-        // 如果有备份文件，且注入异常，执行自动回滚还原数据库
-        if (backupPath && fs.existsSync(backupPath)) {
-            try {
-                fs.copyFileSync(backupPath, DB_PATH);
-                log('🚨 注入流程异常已触发自动回滚还原数据库！');
-            } catch (rollbackErr) {
-                log('🚨 严重错误：自动回滚失败: ' + (rollbackErr.message || rollbackErr));
+        return { success: false, backupPath, dbPath, error: e };
+    }
+}
+
+// === 同步系统原生凭据管理器 (gemini:antigravity) ===
+function syncSystemKeyring() {
+    log('开始同步操作系统原生凭据管理器 (gemini:antigravity)...');
+    const secretJson = JSON.stringify({
+        token: {
+            access_token: ACCESS_TOKEN,
+            token_type: "Bearer",
+            refresh_token: REFRESH_TOKEN,
+            expiry: new Date(EXPIRY * 1000).toISOString()
+        },
+        auth_method: "consumer"
+    });
+
+    if (PLATFORM === 'win32') {
+        const tempDir = path.dirname(LOG_PATH);
+        const psFile = path.join(tempDir, 'cred_write_' + Date.now() + '.ps1');
+        const dataFile = path.join(tempDir, 'cred_data_' + Date.now() + '.json');
+        const safeDataPath = JSON.stringify(dataFile);
+        const psLines = [
+            '$Definition = @"',
+            'using System;',
+            'using System.Runtime.InteropServices;',
+            'public class CredMgr {',
+            '    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]',
+            '    public struct CREDENTIAL {',
+            '        public uint Flags;',
+            '        public uint Type;',
+            '        public string TargetName;',
+            '        public string Comment;',
+            '        public long LastWritten;',
+            '        public uint CredentialBlobSize;',
+            '        public IntPtr CredentialBlob;',
+            '        public uint Persist;',
+            '        public uint AttributeCount;',
+            '        public IntPtr Attributes;',
+            '        public string TargetAlias;',
+            '        public string UserName;',
+            '    }',
+            '    [DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]',
+            '    public static extern bool CredWrite(ref CREDENTIAL credential, uint flags);',
+            '    [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]',
+            '    public static extern bool CredDelete(string target, uint type, int reservedFlag);',
+            '    public static bool Write(string target, string userName, string secret) {',
+            '        CredDelete(target, 1, 0);',
+            '        byte[] b = System.Text.Encoding.UTF8.GetBytes(secret);',
+            '        IntPtr blobPtr = Marshal.AllocHGlobal(b.Length);',
+            '        Marshal.Copy(b, 0, blobPtr, b.Length);',
+            '        var cred = new CREDENTIAL {',
+            '            Flags = 0, Type = 1, TargetName = target, Comment = null, LastWritten = 0,',
+            '            CredentialBlobSize = (uint)b.Length, CredentialBlob = blobPtr, Persist = 2,',
+            '            AttributeCount = 0, Attributes = IntPtr.Zero, TargetAlias = null, UserName = userName',
+            '        };',
+            '        bool ok = CredWrite(ref cred, 0);',
+            '        Marshal.FreeHGlobal(blobPtr);',
+            '        return ok;',
+            '    }',
+            '}',
+            '"@',
+            'Add-Type -TypeDefinition $Definition',
+            '$secret = Get-Content -Raw -LiteralPath ' + safeDataPath,
+            '[CredMgr]::Write("gemini:antigravity", "antigravity", $secret)'
+        ];
+        try {
+            fs.writeFileSync(dataFile, secretJson, 'utf-8');
+            fs.writeFileSync(psFile, psLines.join(String.fromCharCode(13, 10)), 'utf-8');
+            const result = execSync('powershell -ExecutionPolicy Bypass -File "' + psFile + '"', { encoding: 'utf-8', windowsHide: true });
+            log('Windows 凭据管理器同步结果: ' + result.trim());
+        } catch (e) {
+            log('Windows 凭据管理器同步异常: ' + (e.message || e));
+        } finally {
+            try { fs.unlinkSync(psFile); } catch {}
+            try { fs.unlinkSync(dataFile); } catch {}
+        }
+    } else if (PLATFORM === 'darwin') {
+        try {
+            const payloadB64 = Buffer.from(secretJson).toString('base64');
+            const fullKeyringValue = 'go-keyring-base64:' + payloadB64;
+            execSync('security delete-generic-password -s gemini -a antigravity 2>/dev/null || true');
+            execSync('security add-generic-password -s gemini -a antigravity -w "' + fullKeyringValue + '" -A');
+            log('macOS Keychain 凭据同步成功');
+        } catch (e) {
+            log('macOS Keychain 凭据同步异常: ' + (e.message || e));
+        }
+    }
+}
+
+// === 注入所有目标数据库，并在异常时统一原子回滚 ===
+async function injectAllDatabases() {
+    log('开始协同注入，目标数据库总数: ' + DB_PATHS.length);
+    const SQL = await loadSqlJs();
+    const results = [];
+    let hasFailure = false;
+    
+    for (const p of DB_PATHS) {
+        const res = await injectTokenToSingleDb(p, SQL);
+        results.push(res);
+        if (!res.success && !res.skipped) {
+            hasFailure = true;
+            break;
+        }
+    }
+    
+    if (hasFailure) {
+        log('🚨 检测到部分数据库注入失败，开始执行全局原子回滚...');
+        for (const res of results) {
+            if (res.backupPath && fs.existsSync(res.backupPath)) {
+                try {
+                    fs.copyFileSync(res.backupPath, res.dbPath);
+                    log('已还原备份: ' + res.dbPath);
+                } catch (rErr) {
+                    log('🚨 还原备份失败: ' + res.dbPath + ' (' + (rErr.message || rErr) + ')');
+                }
             }
         }
         return false;
     }
+    
+    // 1. 同步操作系统原生凭据管理器 (gemini:antigravity，解决 2.6+ IDE 读取旧账号的核心)
+    try {
+        syncSystemKeyring();
+    } catch (keyringErr) {
+        log('同步操作系统凭据异常: ' + keyringErr.message);
+    }
+
+    // 2. 尝试同步 CLI 会话凭据
+    try {
+        if (CLI_SESSION_PATH && fs.existsSync(path.dirname(CLI_SESSION_PATH))) {
+            const cliPayload = JSON.stringify({
+                access_token: ACCESS_TOKEN,
+                refresh_token: REFRESH_TOKEN,
+                expiry: EXPIRY,
+                email: EMAIL
+            }, null, 2);
+            fs.writeFileSync(CLI_SESSION_PATH, cliPayload, 'utf-8');
+            log('已同步 CLI 会话凭据: ' + CLI_SESSION_PATH);
+        }
+    } catch (cliErr) {
+        log('同步 CLI 会话凭据异常(非致命): ' + cliErr.message);
+    }
+    
+    return true;
 }
 
 // === 启动 IDE ===
@@ -920,11 +1045,6 @@ function startIDE() {
 
             // 方法1: 优先尝试直接启动物理文件路径（spawn 速度极快且完全无弹错风险）
             if (exePath && fs.existsSync(exePath)) {
-                if (isAntigravityRunning()) {
-                    log('物理启动跳过: 检测到 Antigravity 进程已经在运行');
-                    return true;
-                }
-                
                 log('尝试直接 spawn 启动 IDE 可执行文件: ' + exePath);
                 
                 // 关键修复：清理环境变量，防止污染新进程
@@ -1089,38 +1209,42 @@ function startIDE() {
 // === 主流程 ===
 async function main() {
     log('========================================');
-    log('Antigravity Multi-Account Cockpit 账号切换代理启动 (Fast Mode)');
+    log('Antigravity Multi-Account Cockpit 账号切换代理启动');
     log('平台: ' + PLATFORM);
-    log('数据库: ' + DB_PATH);
+    log('目标数据库列表: ' + DB_PATHS.join(' , '));
     log('========================================');
     
-    // 1. 短暂等待 400ms 让主进程断开
-    log('等待 400ms 让主进程准备退出...');
-    await sleep(400);
+    // 1. 先等待让 VS Code 发出 quit 命令
+    const initialWait = Math.max(2, Math.floor(PROCESS_WAIT_SECONDS / 5));
+    log('等待 ' + initialWait + ' 秒让主进程发送退出命令...');
+    await sleep(initialWait * 1000);
     
     // 2. 主动强制关闭所有 Antigravity 进程
     killAllAntigravity();
     
-    // 3. 快速轮询等待 IDE 进程完全退出
-    await waitForProcessExit(4000);
+    // 3. 等待 IDE 进程完全退出
+    const exitWait = Math.max(5, Math.floor(PROCESS_WAIT_SECONDS / 2));
+    await waitForProcessExit(exitWait);
     
-    // 4. 短暂缓冲 300ms 确保文件锁释放
-    await sleep(300);
+    // 4. 额外等待确保文件锁释放
+    const releaseWait = Math.max(3, Math.floor(PROCESS_WAIT_SECONDS / 3));
+    log('等待 ' + releaseWait + ' 秒确保资源完全释放...');
+    await sleep(releaseWait * 1000);
     
-    // 5. 注入 Token
-    const injected = await injectToken();
+    // 3. 注入 Token
+    const injected = await injectAllDatabases();
     if (!injected) {
         log('注入失败，终止流程');
         process.exit(1);
     }
     
-    // 6. 极短缓冲 200ms 确保写盘
-    await sleep(200);
+    // 4. 等待一下确保写入完成
+    await sleep(1000);
     
-    // 7. 立即启动 IDE
+    // 5. 启动 IDE
     const started = startIDE();
     if (started) {
-        log('IDE 启动指令已发送 (极速重启完成)');
+        log('IDE 启动指令已发送');
     } else {
         log('IDE 启动失败，请手动打开 Antigravity');
     }
@@ -1143,10 +1267,16 @@ main().catch(e => {
     process.exit(1);
 });
 `;
-
         // 写入主脚本
         fs.writeFileSync(mainScriptPath, mainScriptContent, 'utf-8');
-
+        // 安全自检：使用 node -c 校验生成的脚本语法
+        try {
+            execSync(`"${nodeExe}" -c "${mainScriptPath}"`, { encoding: 'utf-8', windowsHide: true });
+        }
+        catch (checkErr: any) {
+            console.error('[Cockpit] Generated switch script failed syntax check:', checkErr);
+            throw new Error(`Generated switch script syntax check failed: ${checkErr.message}`);
+        }
         // 根据平台启动独立进程
         if (platform === 'win32') {
             // Windows: 使用 VBScript 包装确保完全独立
@@ -1160,18 +1290,16 @@ main().catch(e => {
 WshShell.Run Chr(34) & "${nodeExeVbs}" & Chr(34) & " " & Chr(34) & "${scriptPathVbs}" & Chr(34), 0, False
 `;
             fs.writeFileSync(vbsPath, vbsContent, 'utf-8');
-
             const child = spawn('wscript', [vbsPath], {
                 detached: true,
                 stdio: 'ignore',
                 windowsHide: true
             });
             child.unref();
-
-        } else {
+        }
+        else {
             // Linux/macOS: 使用 nohup + setsid 确保独立
             const shellCmd = `nohup "${nodeExe}" "${mainScriptPath}" > "${logPath}" 2>&1 &`;
-
             spawn('sh', ['-c', shellCmd], {
                 detached: true,
                 stdio: 'ignore'

@@ -6,6 +6,15 @@ import { DATA_DIR } from './constants';
 export const MODEL_GROUPS_FILE = path.join(DATA_DIR, "model_groups.json");
 
 /**
+ * 默认预置的官方分组及其简称规则
+ */
+export const DEFAULT_OFFICIAL_GROUPS = [
+    { pattern: /argon/i, shortName: 'Gemini Argon' },
+    { pattern: /claude|3p|gpt/i, shortName: 'Claude' },
+    { pattern: /gemini/i, shortName: 'Gemini' }
+];
+
+/**
  * 模型信息接口
  */
 export interface ModelInfo {
@@ -13,6 +22,10 @@ export interface ModelInfo {
     displayName?: string;  // Tên hiển thị thân thiện (như "Claude Sonnet 4.6 (Thinking)")
     resetTime: string;     // Thời gian reset
     percentage: number;    // % quota còn lại
+    has_5h?: boolean;
+    weekly_percentage?: number;
+    has_weekly?: boolean;
+    weekly_reset_time?: string;
 }
 
 /**
@@ -24,6 +37,18 @@ export function formatModelDisplayName(modelName: string): string {
 
     // Claude series
     if (lower.includes('claude')) {
+        if (lower.includes('opus-5-5') || lower.includes('opus 5.5')) {
+            if (lower.includes('high')) return 'Claude Opus 5.5 (High)';
+            if (lower.includes('medium')) return 'Claude Opus 5.5 (Medium)';
+            if (lower.includes('low')) return 'Claude Opus 5.5 (Low)';
+            return 'Claude Opus 5.5';
+        }
+        if (lower.includes('sonnet-5-5') || lower.includes('sonnet 5.5')) {
+            if (lower.includes('high')) return 'Claude Sonnet 5.5 (High)';
+            if (lower.includes('medium')) return 'Claude Sonnet 5.5 (Medium)';
+            if (lower.includes('low')) return 'Claude Sonnet 5.5 (Low)';
+            return 'Claude Sonnet 5.5';
+        }
         if (lower.includes('opus-4-6') || lower.includes('opus 4.6')) return 'Claude Opus 4.6 (Thinking)';
         if (lower.includes('sonnet-4-6') || lower.includes('sonnet 4.6')) return 'Claude Sonnet 4.6 (Thinking)';
         if (lower.includes('3.7') || lower.includes('3-7')) return 'Claude 3.7 Sonnet';
@@ -36,10 +61,17 @@ export function formatModelDisplayName(modelName: string): string {
 
     // Gemini series
     if (lower.includes('gemini')) {
+        if (lower.includes('4.0') || lower.includes('4-0') || lower.includes('gemini-4') || lower.includes('gemini 4')) {
+            if (lower.includes('pro')) return 'Gemini 4.0 Pro';
+            if (lower.includes('ultra')) return 'Gemini 4.0 Ultra';
+            if (lower.includes('flash')) return 'Gemini 4.0 Flash';
+            return 'Gemini 4.0';
+        }
         if (lower.includes('3.8') || lower.includes('3-8')) {
-            if (lower.includes('high')) return 'Gemini 3.8 Flash High';
-            if (lower.includes('medium')) return 'Gemini 3.8 Flash Medium';
-            if (lower.includes('low')) return 'Gemini 3.8 Flash Low';
+            if (lower.includes('high')) return 'Gemini 3.8 Flash (High)';
+            if (lower.includes('medium')) return 'Gemini 3.8 Flash (Medium)';
+            if (lower.includes('low')) return 'Gemini 3.8 Flash (Low)';
+            if (lower.includes('tiered')) return 'Gemini 3.8 Flash (Tiered)';
             return 'Gemini 3.8 Flash';
         }
         if (lower.includes('3.7') || lower.includes('3-7')) {
@@ -103,17 +135,22 @@ export function formatModelDisplayName(modelName: string): string {
  * 模型分组接口
  */
 export interface ModelGroup {
-    id: string;            // 分组唯一ID
-    name: string;          // 分组名称 (如 "Claude", "Gemini 3 Pro")
-    models: string[];      // 分组内的模型名称列表
-    createdAt: number;     // 创建时间戳
-    updatedAt: number;     // 更新时间戳
+    id: string;               // 分组唯一ID
+    name: string;             // 分组名称 (如 "Claude", "Gemini")
+    models: string[];         // 分组内的模型名称列表
+    createdAt: number;        // 创建时间戳
+    updatedAt: number;        // 更新时间戳
+    officialName?: string;    // 官方全称 (如 "Claude and GPT models")
+    enabled?: boolean;        // 是否在状态栏显示该分组
+    order?: number;           // 排序序号
+    description?: string;     // 官方分组描述
 }
 
 /**
  * 分组配置接口
  */
 export interface ModelGroupsConfig {
+    version?: number;
     groups: ModelGroup[];
     lastAutoGrouped: number | null;  // 上次自动分组时间
 }
@@ -122,19 +159,37 @@ export interface ModelGroupsConfig {
  * 模型分组管理器
  */
 export class ModelGroupManager {
+    static generateGroupId(officialName: string): string {
+        const id = officialName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        return id || `group_${Date.now()}`;
+    }
+
+    static generateDefaultShortName(officialName: string): string {
+        for (const rule of DEFAULT_OFFICIAL_GROUPS) {
+            if (rule.pattern.test(officialName)) {
+                return rule.shortName;
+            }
+        }
+        const cleaned = officialName.replace(/\s+models$/i, '').trim();
+        return cleaned || officialName;
+    }
 
     /**
      * 加载分组配置
      */
     static loadGroups(): ModelGroupsConfig {
         if (!fs.existsSync(MODEL_GROUPS_FILE)) {
-            return { groups: [], lastAutoGrouped: null };
+            return { version: 2, groups: [], lastAutoGrouped: null };
         }
         try {
-            return JSON.parse(fs.readFileSync(MODEL_GROUPS_FILE, 'utf8'));
+            const raw = JSON.parse(fs.readFileSync(MODEL_GROUPS_FILE, 'utf8'));
+            if (!raw.version || (Array.isArray(raw.groups) && raw.groups.some((g: any) => !g.officialName))) {
+                return this.migrateOldConfig(raw);
+            }
+            return raw;
         } catch (e) {
-            console.error('Failed to load model groups', e);
-            return { groups: [], lastAutoGrouped: null };
+            console.error('[ModelGroupManager] Failed to load model groups', e);
+            return { version: 2, groups: [], lastAutoGrouped: null };
         }
     }
 
@@ -146,26 +201,208 @@ export class ModelGroupManager {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
+        config.version = 2;
         fs.writeFileSync(MODEL_GROUPS_FILE, JSON.stringify(config, null, 2), 'utf8');
     }
 
     /**
-     * 创建新分组
+     * 旧配置升级迁移
      */
+    static migrateOldConfig(oldConfig: any): ModelGroupsConfig {
+        const now = Date.now();
+        const existingGroups: any[] = (oldConfig && Array.isArray(oldConfig.groups)) ? oldConfig.groups : [];
+        const newGroups: ModelGroup[] = [];
+
+        const defaultGroups = [
+            { officialName: 'Claude and GPT models', name: 'Claude', description: 'Models within this group: Claude Opus, Claude Sonnet, GPT-OSS' },
+            { officialName: 'Gemini Models', name: 'Gemini', description: 'Models within this group: Gemini Flash, Gemini Pro' }
+        ];
+
+        let order = 1;
+        for (const item of defaultGroups) {
+            const matchOld = existingGroups.find(g => g.name && g.name.toLowerCase() === item.name.toLowerCase());
+            newGroups.push({
+                id: this.generateGroupId(item.officialName),
+                officialName: item.officialName,
+                name: item.name,
+                models: matchOld?.models || [],
+                enabled: true,
+                order: order++,
+                description: item.description,
+                createdAt: matchOld?.createdAt || now,
+                updatedAt: now
+            });
+        }
+
+        const migratedConfig: ModelGroupsConfig = {
+            version: 2,
+            groups: newGroups,
+            lastAutoGrouped: now
+        };
+
+        this.saveGroups(migratedConfig);
+        return migratedConfig;
+    }
+
+    /**
+     * 同步发现的模型分组 (结合 Quota Groups)
+     */
+    static syncDiscoveredGroups(quotaGroups: any[] | null, models: string[] = []): ModelGroupsConfig {
+        const config = this.loadGroups();
+        let changed = false;
+
+        const discovered: Array<{ displayName: string; description?: string }> = [];
+
+        if (quotaGroups && Array.isArray(quotaGroups) && quotaGroups.length > 0) {
+            for (const qg of quotaGroups) {
+                if (qg.displayName && !discovered.some(d => d.displayName.toLowerCase() === qg.displayName.toLowerCase())) {
+                    discovered.push({ displayName: qg.displayName, description: qg.description });
+                }
+            }
+        } else if (models && models.length > 0) {
+            if (models.some(m => /claude|3p|gpt/i.test(m))) {
+                discovered.push({ displayName: 'Claude and GPT models', description: 'Models within this group: Claude Opus, Claude Sonnet, GPT-OSS' });
+            }
+            if (models.some(m => /argon/i.test(m))) {
+                discovered.push({ displayName: 'Gemini Argon', description: 'Models within this group: Gemini Argon' });
+            }
+            if (models.some(m => /gemini/i.test(m) && !/argon/i.test(m))) {
+                discovered.push({ displayName: 'Gemini Models', description: 'Models within this group: Gemini Flash, Gemini Pro' });
+            }
+        }
+
+        if (discovered.length === 0) {
+            return config;
+        }
+
+        for (const item of discovered) {
+            const existingIndex = config.groups.findIndex(
+                g => (g.officialName && g.officialName.toLowerCase() === item.displayName.toLowerCase()) ||
+                     (g.id === this.generateGroupId(item.displayName))
+            );
+
+            if (existingIndex >= 0) {
+                if (!config.groups[existingIndex].description && item.description) {
+                    config.groups[existingIndex].description = item.description;
+                    changed = true;
+                }
+            } else {
+                const newGroup: ModelGroup = {
+                    id: this.generateGroupId(item.displayName),
+                    officialName: item.displayName,
+                    name: this.generateDefaultShortName(item.displayName),
+                    models: [],
+                    enabled: true,
+                    order: config.groups.length + 1,
+                    description: item.description,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now()
+                };
+                config.groups.push(newGroup);
+                changed = true;
+            }
+        }
+
+        // Tự động phân bổ models vào groups
+        if (models && models.length > 0) {
+            for (const model of models) {
+                const lower = model.toLowerCase();
+                const isClaudeOrGpt = lower.startsWith('claude') || lower.startsWith('gpt') || lower.includes('sonnet') || lower.includes('opus');
+                const isGemini = lower.startsWith('gemini') || lower.includes('gemini');
+
+                for (const group of config.groups) {
+                    const gname = (group.officialName || group.name).toLowerCase();
+                    const match = isClaudeOrGpt
+                        ? (gname.includes('claude') || gname.includes('gpt') || gname.includes('3p'))
+                        : isGemini
+                            ? (gname.includes('gemini') || (!gname.includes('claude') && !gname.includes('gpt') && !gname.includes('3p')))
+                            : false;
+
+                    if (match && !group.models.includes(model)) {
+                        group.models.push(model);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            config.lastAutoGrouped = Date.now();
+            this.saveGroups(config);
+        }
+
+        return config;
+    }
+
+    static extractGroupsFromQuota(quotaData: any): Array<{ displayName: string; description?: string }> {
+        if (!quotaData || quotaData.is_error) return [];
+        const discovered: Array<{ displayName: string; description?: string }> = [];
+
+        if (quotaData.quota_groups && Array.isArray(quotaData.quota_groups) && quotaData.quota_groups.length > 0) {
+            for (const qg of quotaData.quota_groups) {
+                if (qg.displayName && !discovered.some(d => d.displayName.toLowerCase() === qg.displayName.toLowerCase())) {
+                    discovered.push({ displayName: qg.displayName, description: qg.description });
+                }
+            }
+        } else if (quotaData.models && Array.isArray(quotaData.models) && quotaData.models.length > 0) {
+            if (quotaData.models.some((m: any) => /claude|3p|gpt/i.test(m.name))) {
+                discovered.push({ displayName: 'Claude and GPT models', description: 'Models within this group: Claude Opus, Claude Sonnet, GPT-OSS' });
+            }
+            if (quotaData.models.some((m: any) => /argon/i.test(m.name))) {
+                discovered.push({ displayName: 'Gemini Argon', description: 'Models within this group: Gemini Argon' });
+            }
+            if (quotaData.models.some((m: any) => /gemini/i.test(m.name) && !/argon/i.test(m.name))) {
+                discovered.push({ displayName: 'Gemini Models', description: 'Models within this group: Gemini Flash, Gemini Pro' });
+            }
+        }
+
+        return discovered;
+    }
+
+    static resetToDefaults(discovered?: Array<{ displayName: string; description?: string }>): ModelGroupsConfig {
+        const now = Date.now();
+        const baseList = (discovered && discovered.length > 0) ? discovered : [
+            { displayName: 'Claude and GPT models', description: 'Models: Claude Opus, Claude Sonnet, GPT-OSS' },
+            { displayName: 'Gemini Models', description: 'Models: Gemini Flash, Gemini Pro' }
+        ];
+
+        let order = 1;
+        const groups: ModelGroup[] = baseList.map(item => ({
+            id: this.generateGroupId(item.displayName),
+            officialName: item.displayName,
+            name: this.generateDefaultShortName(item.displayName),
+            models: [],
+            enabled: true,
+            order: order++,
+            description: item.description,
+            createdAt: now,
+            updatedAt: now
+        }));
+
+        const newConfig: ModelGroupsConfig = {
+            version: 2,
+            groups,
+            lastAutoGrouped: now
+        };
+
+        this.saveGroups(newConfig);
+        return newConfig;
+    }
+
     static createGroup(name: string, models: string[] = []): ModelGroup {
         const now = Date.now();
         return {
-            id: `group_${now}_${Math.random().toString(36).substring(2, 8)}`,
-            name,
+            id: this.generateGroupId(name),
+            officialName: name,
+            name: this.generateDefaultShortName(name),
             models,
+            enabled: true,
+            order: 999,
             createdAt: now,
             updatedAt: now
         };
     }
 
-    /**
-     * 添加分组
-     */
     static addGroup(config: ModelGroupsConfig, group: ModelGroup): ModelGroupsConfig {
         return {
             ...config,
@@ -173,23 +410,13 @@ export class ModelGroupManager {
         };
     }
 
-    /**
-     * 更新分组
-     */
     static updateGroup(config: ModelGroupsConfig, groupId: string, updates: Partial<ModelGroup>): ModelGroupsConfig {
         return {
             ...config,
-            groups: config.groups.map(g =>
-                g.id === groupId
-                    ? { ...g, ...updates, updatedAt: Date.now() }
-                    : g
-            )
+            groups: config.groups.map(g => g.id === groupId ? { ...g, ...updates, updatedAt: Date.now() } : g)
         };
     }
 
-    /**
-     * 删除分组
-     */
     static deleteGroup(config: ModelGroupsConfig, groupId: string): ModelGroupsConfig {
         return {
             ...config,
@@ -197,9 +424,6 @@ export class ModelGroupManager {
         };
     }
 
-    /**
-     * 向分组添加模型
-     */
     static addModelToGroup(config: ModelGroupsConfig, groupId: string, modelName: string): ModelGroupsConfig {
         return {
             ...config,
@@ -212,9 +436,6 @@ export class ModelGroupManager {
         };
     }
 
-    /**
-     * 从分组移除模型
-     */
     static removeModelFromGroup(config: ModelGroupsConfig, groupId: string, modelName: string): ModelGroupsConfig {
         return {
             ...config,
@@ -227,62 +448,31 @@ export class ModelGroupManager {
         };
     }
 
-    /**
-     * Tự động phân loại model:
-     * Chuẩn hóa về 2 nhóm chính: 'Claude' và 'Gemini' (hoặc 'GPT' / 'Khác' nếu có)
-     */
     static extractSeriesName(modelName: string): string {
-        const lowerName = modelName.toLowerCase();
-
-        // Tất cả model Claude
-        if (lowerName.includes('claude')) {
-            return 'Claude';
-        }
-
-        // Tất cả model Gemini của Google
-        if (lowerName.includes('gemini')) {
-            return 'Gemini';
-        }
-
-        // Model GPT (nếu có)
-        if (lowerName.includes('gpt')) {
-            return 'GPT';
-        }
-
+        const lower = modelName.toLowerCase();
+        if (lower.includes('claude')) return 'Claude';
+        if (lower.includes('gemini')) return 'Gemini';
+        if (lower.includes('gpt')) return 'GPT';
         return 'Khác';
     }
 
-    /**
-     * Tự động gom nhóm chuẩn: Chỉ chia thành Claude và Gemini (hoặc GPT/Khác)
-     * Toàn bộ model Claude gom vào nhóm 'Claude', toàn bộ model Gemini gom vào nhóm 'Gemini'
-     */
     static autoGroup(models: ModelInfo[]): ModelGroup[] {
         const now = Date.now();
-        const claudeModels: string[] = [];
-        const geminiModels: string[] = [];
-        const gptModels: string[] = [];
-        const otherModels: string[] = [];
-
-        for (const m of models) {
-            const series = this.extractSeriesName(m.name);
-            if (series === 'Claude') {
-                if (!claudeModels.includes(m.name)) claudeModels.push(m.name);
-            } else if (series === 'Gemini') {
-                if (!geminiModels.includes(m.name)) geminiModels.push(m.name);
-            } else if (series === 'GPT') {
-                if (!gptModels.includes(m.name)) gptModels.push(m.name);
-            } else {
-                if (!otherModels.includes(m.name)) otherModels.push(m.name);
-            }
-        }
+        const claudeModels = models.filter(m => m.name.toLowerCase().includes('claude')).map(m => m.name);
+        const geminiModels = models.filter(m => m.name.toLowerCase().includes('gemini')).map(m => m.name);
+        const gptModels = models.filter(m => m.name.toLowerCase().includes('gpt')).map(m => m.name);
+        const otherModels = models.filter(m => !m.name.toLowerCase().includes('claude') && !m.name.toLowerCase().includes('gemini') && !m.name.toLowerCase().includes('gpt')).map(m => m.name);
 
         const groups: ModelGroup[] = [];
 
         if (claudeModels.length > 0) {
             groups.push({
                 id: 'group_claude',
+                officialName: 'Claude and GPT models',
                 name: 'Claude',
                 models: claudeModels,
+                enabled: true,
+                order: 1,
                 createdAt: now,
                 updatedAt: now
             });
@@ -291,8 +481,11 @@ export class ModelGroupManager {
         if (geminiModels.length > 0) {
             groups.push({
                 id: 'group_gemini',
+                officialName: 'Gemini Models',
                 name: 'Gemini',
                 models: geminiModels,
+                enabled: true,
+                order: 2,
                 createdAt: now,
                 updatedAt: now
             });
@@ -301,8 +494,11 @@ export class ModelGroupManager {
         if (gptModels.length > 0) {
             groups.push({
                 id: 'group_gpt',
+                officialName: 'Claude and GPT models',
                 name: 'GPT',
                 models: gptModels,
+                enabled: true,
+                order: 3,
                 createdAt: now,
                 updatedAt: now
             });
@@ -311,8 +507,11 @@ export class ModelGroupManager {
         if (otherModels.length > 0) {
             groups.push({
                 id: 'group_other',
+                officialName: 'Khác',
                 name: 'Khác',
                 models: otherModels,
+                enabled: true,
+                order: 4,
                 createdAt: now,
                 updatedAt: now
             });
@@ -321,12 +520,6 @@ export class ModelGroupManager {
         return groups;
     }
 
-    /**
-     * Tự động đồng bộ và cập nhật model mới từ IDE vào các nhóm:
-     * - Nếu chưa có nhóm hoặc đang có các nhóm cũ phân mảnh -> Chuẩn hóa về Claude & Gemini.
-     * - Nếu trong IDE xuất hiện bất kỳ model mới nào -> Tự động thêm vào nhóm Claude hoặc Gemini.
-     * - Tự động lưu và trả về cấu hình nhóm cập nhật nhất.
-     */
     static syncAndAutoGroupModels(models: ModelInfo[]): ModelGroupsConfig {
         if (!models || models.length === 0) {
             return this.loadGroups();
@@ -335,32 +528,22 @@ export class ModelGroupManager {
         let config = this.loadGroups();
         const now = Date.now();
 
-        // Kiểm tra xem cấu hình có đang bị phân mảnh nhóm kiểu cũ (ví dụ "Gemini 2.5 Flash", "Gemini 3 Flash", "Gemini 3.1 Pro", etc.) không
-        const isFragmented = config.groups.some(g =>
-            (g.name.toLowerCase().startsWith('gemini') && g.name.toLowerCase() !== 'gemini') ||
-            (g.name.toLowerCase().startsWith('claude') && g.name.toLowerCase() !== 'claude') ||
-            g.name.toLowerCase() === 'group1'
-        );
-
-        if (config.groups.length === 0 || isFragmented) {
+        if (config.groups.length === 0) {
             const newGroups = this.autoGroup(models);
             config = {
+                version: 2,
                 groups: newGroups,
                 lastAutoGrouped: now
             };
             this.saveGroups(config);
-            console.log(`[ModelGroupManager] ✅ Đã tự động chuẩn hóa ${models.length} model về 2 nhóm chính: Claude và Gemini.`);
             return config;
         }
 
-        // Kiểm tra xem có model mới nào trong IDE chưa thuộc bất kỳ nhóm nào không
         const groupedModels = this.getGroupedModels(config);
         const newModels = models.filter(m => !groupedModels.has(m.name));
 
         if (newModels.length > 0) {
-            console.log(`[ModelGroupManager] ⚡ Phát hiện ${newModels.length} model mới từ IDE, đang tự động cập nhật:`, newModels.map(m => m.name));
             let changed = false;
-
             for (const model of newModels) {
                 const targetSeries = this.extractSeriesName(model.name);
                 let targetGroup = config.groups.find(g => g.name.toLowerCase() === targetSeries.toLowerCase());
@@ -368,8 +551,11 @@ export class ModelGroupManager {
                 if (!targetGroup) {
                     targetGroup = {
                         id: `group_${targetSeries.toLowerCase()}`,
+                        officialName: targetSeries,
                         name: targetSeries,
                         models: [],
+                        enabled: true,
+                        order: config.groups.length + 1,
                         createdAt: now,
                         updatedAt: now
                     };
@@ -391,32 +577,22 @@ export class ModelGroupManager {
         return config;
     }
 
-    /**
-     * 获取所有已分组的模型名称
-     */
     static getGroupedModels(config: ModelGroupsConfig): Set<string> {
         const grouped = new Set<string>();
         for (const group of config.groups) {
-            for (const model of group.models) {
+            for (const model of (group.models || [])) {
                 grouped.add(model);
             }
         }
         return grouped;
     }
 
-    /**
-     * 获取未分组的模型
-     */
     static getUngroupedModels(config: ModelGroupsConfig, allModels: ModelInfo[]): ModelInfo[] {
         const grouped = this.getGroupedModels(config);
         return allModels.filter(m => !grouped.has(m.name));
     }
 
-    /**
-     * 初始化默认分组
-     */
     static initDefaultGroupIfNeeded(models: ModelInfo[]): ModelGroupsConfig {
         return this.syncAndAutoGroupModels(models);
     }
 }
-

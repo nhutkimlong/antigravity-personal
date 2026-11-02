@@ -17,6 +17,9 @@ import {
     TOKEN_URL,
     USERINFO_URL,
     getVSCDBPath,
+    getActiveDbPaths,
+    getAntigravityDbCandidates,
+    CLI_SESSION_PATH,
     migrateDataDir,
 } from './constants';
 
@@ -57,9 +60,16 @@ export function activate(context: vscode.ExtensionContext) {
     // 🔄 配置目录迁移：从旧路径 ~/.antigravity_tools 复制到 ~/.antigravity_cockpit
     migrateDataDir();
 
-    const getConfiguredDbPath = () => {
+    const getConfiguredDbPaths = (): string[] => {
         const config = vscode.workspace.getConfiguration('antigravity-cockpit');
-        return getVSCDBPath(config.get<string>('databasePathOverride', ''));
+        const target = config.get<'all' | 'ide' | 'app_cli'>('targetClient', 'all');
+        const override = config.get<string>('databasePathOverride', '');
+        return getActiveDbPaths(target, override);
+    };
+
+    const getConfiguredDbPath = (): string => {
+        const paths = getConfiguredDbPaths();
+        return paths[0] || getVSCDBPath();
     };
 
     const accountTreeProvider = new AccountTreeProvider();
@@ -107,10 +117,10 @@ export function activate(context: vscode.ExtensionContext) {
      */
     async function syncWithIdeAccount(): Promise<boolean> {
         try {
-            const dbPath = getConfiguredDbPath();
+            const dbPaths = getConfiguredDbPaths();
 
             // 1. 先读取运行中实时变更的 auth status，用于热切换已存在账号
-            const authStatus = await DBManager.readAuthStatus(dbPath);
+            const authStatus = await DBManager.readAuthStatus(dbPaths);
             const index = AccountManager.loadIndex();
 
             if (authStatus.state === 'logged_out') {
@@ -185,7 +195,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             // 2. 再读取完整 Token，用于重启后完整同步、刷新 Token、自动导入新账号
-            const tokenInfo = await DBManager.readFullTokenInfo(dbPath);
+            const tokenInfo = await DBManager.readFullTokenInfo(dbPaths);
             if (!tokenInfo) {
                 // IDE 中无登录信息（可能 IDE 未启动或已登出），不做任何操作
                 return false;
@@ -444,7 +454,11 @@ export function activate(context: vscode.ExtensionContext) {
 
                         // 根据额度选择颜色图标
                         const icon = lowestModel.percentage > 50 ? "🟢" : (lowestModel.percentage > 20 ? "🟡" : "🔴");
-                        groupTexts.push(`${icon} ${group.name}: ${lowestModel.percentage}%`);
+                        let quotaText = `${icon} ${group.name}: ${lowestModel.percentage}%`;
+                        if (lowestModel.has_weekly && lowestModel.weekly_percentage !== undefined) {
+                            quotaText += ` [W:${lowestModel.weekly_percentage}%]`;
+                        }
+                        groupTexts.push(quotaText);
                     }
                 }
 
@@ -531,6 +545,31 @@ export function activate(context: vscode.ExtensionContext) {
                         const paddedName = modelDisplayName + namePadding;
 
                         lines.push(`${icon} ${paddedName} ${progressBar} ${pctStr} → ${timeStr}`);
+
+                        if (m.has_weekly && m.weekly_percentage !== undefined) {
+                            const wFilled = Math.round(m.weekly_percentage / 10);
+                            const wEmpty = 10 - wFilled;
+                            const wProgressBar = '█'.repeat(wFilled) + '░'.repeat(wEmpty);
+                            const wPctStr = (m.weekly_percentage.toFixed(0) + '%').padStart(4, ' ');
+                            let wTimeInfo = '';
+                            const wRawReset = m.weekly_reset_time_raw || m.weekly_reset_time;
+                            if (wRawReset) {
+                                const wDate = new Date(wRawReset);
+                                const now = new Date();
+                                const diffMs = wDate.getTime() - now.getTime();
+                                if (diffMs > 0) {
+                                    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                                    const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                                    wTimeInfo = `${diffDays}d${diffHours}h`;
+                                } else {
+                                    wTimeInfo = t('reset');
+                                }
+                            }
+                            const wTimeStr = wTimeInfo.padStart(13, ' ');
+                            const weeklyLabel = '   └ [Tuần/Weekly]';
+                            const weeklyPadding = ' '.repeat(Math.max(0, maxNameWidth - getLen(weeklyLabel)));
+                            lines.push(`  ${weeklyLabel}${weeklyPadding} ${wProgressBar} ${wPctStr} → ${wTimeStr}`);
+                        }
                     }
                 });
 
@@ -676,17 +715,17 @@ export function activate(context: vscode.ExtensionContext) {
     // 初始化定时刷新
     setupAutoRefresh();
 
-    // --- DB 文件实时监听 (实时感知 IDE 登录) ---
+    // --- DB 文件与 CLI 会话实时监听 (实时感知 IDE / 2.0 登录) ---
     let dbWatchTimeout: NodeJS.Timeout | undefined;
     let dbWatchRetryTimeout: NodeJS.Timeout | undefined;
-    let dbWatcher: fs.FSWatcher | undefined;
+    let dbWatchers: fs.FSWatcher[] = [];
 
     const scheduleIdeAccountSync = (reason: string) => {
         if (dbWatchTimeout) {
             clearTimeout(dbWatchTimeout);
         }
         dbWatchTimeout = setTimeout(async () => {
-            console.log(`[Cockpit] IDE 数据库发生变动(${reason})，开始同步检测...`);
+            console.log(`[Cockpit] 数据库/凭据发生变动(${reason})，开始同步检测...`);
             const changed = await syncWithIdeAccount();
             if (changed) {
                 DashboardProvider.refresh();
@@ -696,41 +735,50 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     const startDbWatcher = () => {
-        const dbPath = getConfiguredDbPath();
+        const dbPaths = getConfiguredDbPaths();
+        const watchTargets = new Set<string>();
+        for (const p of dbPaths) {
+            if (fs.existsSync(p)) {
+                watchTargets.add(p);
+            }
+        }
+        if (fs.existsSync(CLI_SESSION_PATH)) {
+            watchTargets.add(CLI_SESSION_PATH);
+        }
 
         if (dbWatchRetryTimeout) {
             clearTimeout(dbWatchRetryTimeout);
             dbWatchRetryTimeout = undefined;
         }
 
-        if (dbWatcher) {
-            dbWatcher.close();
-            dbWatcher = undefined;
+        for (const w of dbWatchers) {
+            try { w.close(); } catch (e) {}
         }
+        dbWatchers = [];
 
-        if (!fs.existsSync(dbPath)) {
-            console.warn(`[Cockpit] IDE 数据库不存在，稍后重试监听: ${dbPath}`);
+        if (watchTargets.size === 0) {
+            console.warn(`[Cockpit] 数据库或凭据文件尚不存在，稍后重试监听`);
             dbWatchRetryTimeout = setTimeout(startDbWatcher, 5000);
             return;
         }
 
-        try {
-            dbWatcher = fs.watch(dbPath, (eventType) => {
-                if (eventType === 'rename') {
-                    console.log('[Cockpit] IDE 数据库监听收到 rename 事件，准备重挂 watcher...');
-                    scheduleIdeAccountSync('rename');
-                    dbWatchRetryTimeout = setTimeout(startDbWatcher, 1000);
-                    return;
-                }
-
-                if (eventType === 'change') {
-                    scheduleIdeAccountSync('change');
-                }
-            });
-            console.log(`[Cockpit] 已开启全局数据库监听: ${dbPath}`);
-        } catch (err) {
-            console.warn('[Cockpit] 数据库监听启动失败, 退化为轮询模式:', err);
-            dbWatchRetryTimeout = setTimeout(startDbWatcher, 5000);
+        for (const targetPath of watchTargets) {
+            try {
+                const watcher = fs.watch(targetPath, (eventType) => {
+                    if (eventType === 'rename') {
+                        scheduleIdeAccountSync('rename');
+                        dbWatchRetryTimeout = setTimeout(startDbWatcher, 1000);
+                        return;
+                    }
+                    if (eventType === 'change') {
+                        scheduleIdeAccountSync('change');
+                    }
+                });
+                dbWatchers.push(watcher);
+                console.log(`[Cockpit] 已开启数据库/凭据监听: ${targetPath}`);
+            } catch (err) {
+                console.warn(`[Cockpit] 监听 ${targetPath} 失败:`, err);
+            }
         }
     };
 
@@ -747,6 +795,10 @@ export function activate(context: vscode.ExtensionContext) {
                 setupAutoRefresh();
                 vscode.window.showInformationMessage(t('autoRefreshUpdated'));
             }
+            if (e.affectsConfiguration('antigravity-cockpit.targetClient') || e.affectsConfiguration('antigravity-cockpit.databasePathOverride')) {
+                startDbWatcher();
+                syncWithIdeAccount().finally(() => updateStatusBar());
+            }
         })
     );
 
@@ -762,9 +814,10 @@ export function activate(context: vscode.ExtensionContext) {
             if (dbWatchRetryTimeout) {
                 clearTimeout(dbWatchRetryTimeout);
             }
-            if (dbWatcher) {
-                dbWatcher.close();
+            for (const w of dbWatchers) {
+                try { w.close(); } catch (e) {}
             }
+            dbWatchers = [];
         }
     });
 
@@ -940,8 +993,9 @@ export function activate(context: vscode.ExtensionContext) {
                 index.current_account_id = accountId;
                 AccountManager.saveIndex(index);
 
-                // 读取配置中的等待时间
+                // 读取配置中的等待时间与同步目标客户端
                 const processWaitSeconds = config.get<number>('processWaitSeconds', 10);
+                const targetClient = config.get<'all' | 'ide' | 'app_cli'>('targetClient', 'all');
 
                 // 启动外部代理接管后续的 Kill -> Inject -> Restart
                 await SwitcherProxy.executeExternalSwitch(
@@ -951,7 +1005,8 @@ export function activate(context: vscode.ExtensionContext) {
                     account.email,
                     dbPathOverride || undefined,
                     Object.keys(exePathConfig).length > 0 ? exePathConfig : undefined,
-                    processWaitSeconds
+                    processWaitSeconds,
+                    targetClient
                 );
 
                 progress.report({ message: t('requestingRestart') });
@@ -1628,12 +1683,12 @@ export function activate(context: vscode.ExtensionContext) {
             console.log('正在检查 IDE 数据库中的真实登录状态...');
 
             // 启动阶段优先等待 antigravityAuthStatus 稳定，避免误信滞后的 oauthToken
-            const dbPath = getConfiguredDbPath();
+            const dbPaths = getConfiguredDbPaths();
             let startupSynced = false;
 
             for (let i = 0; i < 10; i++) {
                 try {
-                    const authStatus = await DBManager.readAuthStatus(dbPath);
+                    const authStatus = await DBManager.readAuthStatus(dbPaths);
                     if (authStatus.state === 'authenticated' && authStatus.email) {
                         console.log(`启动同步检测到稳定登录态: ${authStatus.email}`);
                         const changed = await syncWithIdeAccount();

@@ -4,10 +4,12 @@ import * as path from 'path';
 const initSqlJs = require('sql.js');
 import {
     getVSCDBPath,
+    getActiveDbPaths,
+    CLI_SESSION_PATH,
     DB_KEY_AGENT_STATE,
     DB_KEY_ONBOARDING
 } from './constants';
-import { encodeVarint, removeField } from './utils';
+import { encodeVarint } from './utils';
 
 // sql.js WASM 初始化（单例，避免多次加载）
 let sqlJsPromise: Promise<any> | null = null;
@@ -23,8 +25,19 @@ function getSqlJs() {
  * 彻底避免 Electron ABI 版本不兼容的问题
  */
 export class DBManager {
-    private static resolveDbPath(dbPath?: string): string {
+    static resolveDbPath(dbPath?: string): string {
         return dbPath && dbPath.trim() ? dbPath.trim() : getVSCDBPath();
+    }
+
+    static resolveDbPaths(dbPaths?: string | string[]): string[] {
+        if (Array.isArray(dbPaths)) {
+            const filtered = dbPaths.map(p => p.trim()).filter(p => !!p);
+            return filtered.length > 0 ? filtered : getActiveDbPaths();
+        }
+        if (dbPaths && dbPaths.trim()) {
+            return [dbPaths.trim()];
+        }
+        return getActiveDbPaths();
     }
 
     /**
@@ -45,9 +58,45 @@ export class DBManager {
         fs.writeFileSync(dbPath, buffer);
     }
 
-    static async injectToken(accessToken: string, refreshToken: string, expiry: number, email: string, dbPath?: string) {
-        const resolvedDbPath = this.resolveDbPath(dbPath);
+    /**
+     * 对单个或多个数据库注入 Token，实现 Antigravity IDE 与 Desktop/Tools 2.6+ 智能同步
+     */
+    static async injectToken(accessToken: string, refreshToken: string, expiry: number, email: string, dbPath?: string | string[]) {
+        const targetPaths = this.resolveDbPaths(dbPath);
+        let injectedCount = 0;
+        let lastError: any = null;
 
+        for (const targetPath of targetPaths) {
+            try {
+                await this.injectTokenToSingleDb(accessToken, refreshToken, expiry, email, targetPath);
+                injectedCount++;
+            } catch (err) {
+                lastError = err;
+                console.error(`[DBManager] Failed to inject token into ${targetPath}:`, err);
+            }
+        }
+
+        // Đồng bộ thêm vào jetski-standalone-oauth-token nếu thư mục .gemini tồn tại
+        try {
+            if (CLI_SESSION_PATH && fs.existsSync(path.dirname(CLI_SESSION_PATH))) {
+                const cliPayload = JSON.stringify({
+                    access_token: accessToken,
+                    refresh_token: refreshToken,
+                    expiry: expiry,
+                    email: email
+                }, null, 2);
+                fs.writeFileSync(CLI_SESSION_PATH, cliPayload, 'utf-8');
+            }
+        } catch (cliErr) {
+            console.warn('[DBManager] Failed to write CLI session file:', cliErr);
+        }
+
+        if (injectedCount === 0 && lastError) {
+            throw lastError;
+        }
+    }
+
+    static async injectTokenToSingleDb(accessToken: string, refreshToken: string, expiry: number, email: string, resolvedDbPath: string) {
         if (!fs.existsSync(resolvedDbPath)) {
             throw new Error(`Database not found at ${resolvedDbPath}`);
         }
@@ -63,49 +112,36 @@ export class DBManager {
             const KEY_NEW = "antigravityUnifiedStateSync.oauthToken";
             const KEY_ONBOARD = DB_KEY_ONBOARDING;
 
-            // 1. 新格式注入
+            // 1. 新格式注入 (oauthToken)
             try {
                 const oauthInfo = this.createOAuthInfo(accessToken, refreshToken, expiry);
-                const oauthInfoB64 = oauthInfo.toString('base64');
-                const inner2 = this.encodeStringField(1, oauthInfoB64);
-                const inner1 = this.encodeStringField(1, "oauthTokenInfoSentinelKey");
-                const inner = Buffer.concat([inner1, this.encodeLenDelim(2, inner2)]);
-                const outer = this.encodeLenDelim(1, inner);
-                const outerB64 = outer.toString('base64');
-
-                db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [KEY_NEW, outerB64]);
+                const oauthTokenB64 = this.createUnifiedStateEntry("oauthTokenInfoSentinelKey", oauthInfo);
+                db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [KEY_NEW, oauthTokenB64]);
             } catch (e) {
                 console.error('New format injection failed', e);
             }
 
-            // 2. 旧格式注入
-            const stmt = db.prepare("SELECT value FROM ItemTable WHERE key = ?");
-            stmt.bind([KEY_OLD]);
-            if (stmt.step()) {
-                const row = stmt.getAsObject();
-                try {
-                    const blob = Buffer.from(row.value as string, 'base64');
-                    let clean = removeField(blob, 1); // UserID
-                    clean = removeField(clean, 2); // Email
-                    clean = removeField(clean, 6); // OAuthTokenInfo
-
-                    const emailField = this.createEmailField(email);
-                    const tokenField = this.createOAuthField(accessToken, refreshToken, expiry);
-                    const finalB64 = Buffer.concat([clean, emailField, tokenField]).toString('base64');
-
-                    db.run("UPDATE ItemTable SET value = ? WHERE key = ?", [finalB64, KEY_OLD]);
-                } catch (e) {
-                    console.error('Old format injection failed', e);
-                }
+            // 2. 注入 userStatus (Antigravity 2.6+ 认证链路强依赖)
+            try {
+                const userStatusPayload = this.createMinimalUserStatusPayload(email);
+                const userStatusB64 = this.createUnifiedStateEntry("userStatusSentinelKey", userStatusPayload);
+                db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", ["antigravityUnifiedStateSync.userStatus", userStatusB64]);
+            } catch (e) {
+                console.error('UserStatus injection failed', e);
             }
-            stmt.free();
 
-            // 3. Onboarding 标记
+            // 3. 彻底删除旧版 agentManagerInitState，防止 IDE 读取到残留的陈旧 UserID 导致状态冲突
+            try {
+                db.run("DELETE FROM ItemTable WHERE key = ?", [KEY_OLD]);
+            } catch (e) {
+                console.error('Delete old state failed', e);
+            }
+
+            // 4. Onboarding 标记
             db.run("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", [KEY_ONBOARD, "true"]);
 
-            // 4. 擦除旧账号可能残留的冲突缓存键，迫使新版 IDE 启动时使用新 Token 触发自愈拉取与状态重建
+            // 5. 擦除旧账号可能残留的临时认证状态，迫使 IDE 启动时使用新注入的凭据触发拉取
             db.run("DELETE FROM ItemTable WHERE key = ?", ["antigravityAuthStatus"]);
-            db.run("DELETE FROM ItemTable WHERE key = ?", ["antigravityUnifiedStateSync.userStatus"]);
 
             // 写回磁盘
             this.saveDb(db, resolvedDbPath);
@@ -137,9 +173,56 @@ export class DBManager {
         return this.encodeStringField(2, email);
     }
 
-    static async readFullTokenInfo(dbPath?: string): Promise<{ access_token: string, refresh_token: string, expiry: number } | null> {
-        const resolvedDbPath = this.resolveDbPath(dbPath);
+    private static createMinimalUserStatusPayload(email: string): Buffer {
+        return Buffer.concat([
+            this.encodeStringField(3, email),
+            this.encodeStringField(7, email)
+        ]);
+    }
 
+    private static createUnifiedStateEntry(sentinelKey: string, payload: Buffer): string {
+        const payloadB64 = payload.toString('base64');
+        const inner2 = this.encodeStringField(1, payloadB64);
+        const inner1 = this.encodeStringField(1, sentinelKey);
+        const inner = Buffer.concat([inner1, this.encodeLenDelim(2, inner2)]);
+        const outer = this.encodeLenDelim(1, inner);
+        return outer.toString('base64');
+    }
+
+    static async readFullTokenInfo(dbPath?: string | string[]): Promise<{ access_token: string, refresh_token: string, expiry: number, email?: string } | null> {
+        const paths = this.resolveDbPaths(dbPath);
+
+        for (const p of paths) {
+            if (fs.existsSync(p)) {
+                const res = await this.readFullTokenInfoFromSingleDb(p);
+                if (res) {
+                    return res;
+                }
+            }
+        }
+
+        // Fallback: đọc trực tiếp từ jetski-standalone-oauth-token
+        try {
+            if (CLI_SESSION_PATH && fs.existsSync(CLI_SESSION_PATH)) {
+                const content = fs.readFileSync(CLI_SESSION_PATH, 'utf-8');
+                const parsed = JSON.parse(content);
+                if (parsed && parsed.access_token && parsed.refresh_token) {
+                    return {
+                        access_token: parsed.access_token,
+                        refresh_token: parsed.refresh_token,
+                        expiry: parsed.expiry || 0,
+                        email: parsed.email
+                    };
+                }
+            }
+        } catch (cliErr) {
+            // ignore
+        }
+
+        return null;
+    }
+
+    static async readFullTokenInfoFromSingleDb(resolvedDbPath: string): Promise<{ access_token: string, refresh_token: string, expiry: number } | null> {
         if (!fs.existsSync(resolvedDbPath)) {
             return null;
         }
@@ -231,7 +314,6 @@ export class DBManager {
             }
 
             if (!innerProto) {
-                console.log('[Cockpit] 未找到有效的 innerProto');
                 return null;
             }
 
@@ -265,7 +347,6 @@ export class DBManager {
             }
 
             if (!oauthInfoB64Str) {
-                console.log('[Cockpit] 未找到 oauthInfoB64Str');
                 return null;
             }
 
@@ -298,21 +379,17 @@ export class DBManager {
                     offset = off2 + len;
                 } else if (fieldNum === 4) { // Expiry (Timestamp)
                     const [len, off2] = readVarint(oauthInfo, off1);
-                    const tsMsg = oauthInfo.subarray(off2, off2 + len);
-                    
-                    let tsOff = 0;
-                    let tsIterations = 0;
-                    while (tsOff < tsMsg.length) {
-                        tsIterations++;
-                        if (tsIterations > 100) break;
-
-                        const [tsTag, tsOff1] = readVarint(tsMsg, tsOff);
-                        if ((tsTag >> 3) === 1) {
-                            const [sec, tsOff2] = readVarint(tsMsg, tsOff1);
-                            expiry = sec;
-                            tsOff = tsOff2;
+                    const timeBuf = oauthInfo.subarray(off2, off2 + len);
+                    let toff = 0;
+                    while (toff < timeBuf.length) {
+                        const [tTag, tOff1] = readVarint(timeBuf, toff);
+                        const tField = tTag >> 3;
+                        if (tField === 1) {
+                            const [val, tOff2] = readVarint(timeBuf, tOff1);
+                            expiry = val;
+                            toff = tOff2;
                         } else {
-                            tsOff++;
+                            toff++;
                         }
                     }
                     offset = off2 + len;
@@ -320,9 +397,6 @@ export class DBManager {
                     if (wire === 2) {
                         const [len, off2] = readVarint(oauthInfo, off1);
                         offset = off2 + len;
-                    } else if (wire === 0) {
-                        const [, off2] = readVarint(oauthInfo, off1);
-                        offset = off2;
                     } else {
                         offset++;
                     }
@@ -330,26 +404,66 @@ export class DBManager {
             }
 
             if (accessToken && refreshToken) {
-                return { access_token: accessToken, refresh_token: refreshToken, expiry: expiry };
+                return {
+                    access_token: accessToken,
+                    refresh_token: refreshToken,
+                    expiry: expiry
+                };
             }
-            return null;
 
+            return null;
         } catch (e) {
-            console.error('Failed to read access token from DB', e);
+            console.error('Failed to read new token format from ' + resolvedDbPath, e);
             return null;
         } finally {
             db?.close();
         }
     }
 
-    static async readAuthStatus(dbPath?: string): Promise<{
+    /**
+     * 读取 Antigravity 当前登录状态 (antigravityAuthStatus)
+     * 支持多数据库探测，优先返回最近更新的数据库中的登录状态
+     */
+    static async readAuthStatus(dbPath?: string | string[]): Promise<{
         state: 'authenticated' | 'logged_out' | 'missing';
         email?: string;
         name?: string;
         apiKey?: string;
     }> {
-        const resolvedDbPath = this.resolveDbPath(dbPath);
+        const paths = this.resolveDbPaths(dbPath);
+        // 按修改时间降序排序（优先检查最近变动的数据库）
+        const sortedPaths = paths.filter(p => fs.existsSync(p)).sort((a, b) => {
+            try {
+                return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+            } catch {
+                return 0;
+            }
+        });
 
+        if (sortedPaths.length === 0) {
+            return { state: 'missing' };
+        }
+
+        let sawLoggedOut = false;
+        for (const p of sortedPaths) {
+            const res = await this.readSingleDbAuthStatus(p);
+            if (res.state === 'authenticated') {
+                return res;
+            }
+            if (res.state === 'logged_out') {
+                sawLoggedOut = true;
+            }
+        }
+
+        return sawLoggedOut ? { state: 'logged_out' } : { state: 'missing' };
+    }
+
+    private static async readSingleDbAuthStatus(resolvedDbPath: string): Promise<{
+        state: 'authenticated' | 'logged_out' | 'missing';
+        email?: string;
+        name?: string;
+        apiKey?: string;
+    }> {
         if (!fs.existsSync(resolvedDbPath)) {
             return { state: 'missing' };
         }
@@ -389,7 +503,7 @@ export class DBManager {
                 apiKey: parsed.apiKey
             };
         } catch (e) {
-            console.error('Failed to read auth status from DB', e);
+            console.error('Failed to read auth status from DB ' + resolvedDbPath, e);
             return { state: 'missing' };
         } finally {
             db?.close();
@@ -397,61 +511,13 @@ export class DBManager {
     }
 
     private static createOAuthField(accessToken: string, refreshToken: string, expiry: number): Buffer {
-        // message OAuthTokenInfo {
-        //     optional string access_token = 1;
-        //     optional string token_type = 2;
-        //     optional string refresh_token = 3;
-        //     optional Timestamp expiry = 4;
-        // }
-
-        // Field 1: access_token (string, tag=1, wire=2)
-        const tag1 = (1 << 3) | 2;
-        const field1 = Buffer.concat([
-            encodeVarint(tag1),
-            encodeVarint(Buffer.byteLength(accessToken)),
-            Buffer.from(accessToken)
-        ]);
-
-        // Field 2: token_type ("Bearer", tag=2, wire=2)
-        const tokenType = "Bearer";
-        const tag2 = (2 << 3) | 2;
-        const field2 = Buffer.concat([
-            encodeVarint(tag2),
-            encodeVarint(Buffer.byteLength(tokenType)),
-            Buffer.from(tokenType)
-        ]);
-
-        // Field 3: refresh_token (string, tag=3, wire=2)
-        const tag3 = (3 << 3) | 2;
-        const field3 = Buffer.concat([
-            encodeVarint(tag3),
-            encodeVarint(Buffer.byteLength(refreshToken)),
-            Buffer.from(refreshToken)
-        ]);
-
-        // Field 4: expiry (Timestamp, tag=4, wire=2)
-        // Timestamp: Field 1: seconds (int64, tag=1, wire=0)
+        const f1 = this.encodeStringField(1, accessToken);
+        const f2 = this.encodeStringField(2, "Bearer");
+        const f3 = this.encodeStringField(3, refreshToken);
         const timestampTag = (1 << 3) | 0;
-        const timestampMsg = Buffer.concat([
-            encodeVarint(timestampTag),
-            encodeVarint(expiry)
-        ]);
-
-        const tag4 = (4 << 3) | 2;
-        const field4 = Buffer.concat([
-            encodeVarint(tag4),
-            encodeVarint(timestampMsg.length),
-            timestampMsg
-        ]);
-
-        const oauthInfo = Buffer.concat([field1, field2, field3, field4]);
-
-        // Field 6 (tag=6, wire=2)
-        const tag6 = (6 << 3) | 2;
-        return Buffer.concat([
-            encodeVarint(tag6),
-            encodeVarint(oauthInfo.length),
-            oauthInfo
-        ]);
+        const timestampMsg = Buffer.concat([encodeVarint(timestampTag), encodeVarint(expiry)]);
+        const f4 = this.encodeLenDelim(4, timestampMsg);
+        const inner = Buffer.concat([f1, f2, f3, f4]);
+        return this.encodeLenDelim(6, inner);
     }
 }

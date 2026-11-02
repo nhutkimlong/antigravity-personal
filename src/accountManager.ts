@@ -7,20 +7,48 @@ import {
     CLIENT_ID,
     CLIENT_SECRET,
     TOKEN_URL,
-    USERINFO_URL,
-    QUOTA_API_URL,
-    LOAD_CODE_ASSIST_URL,
     QUOTA_API_ENDPOINTS,
     LOAD_CODE_ASSIST_ENDPOINTS,
+    QUOTA_SUMMARY_ENDPOINTS,
     IMPORTANT_MODELS
 } from './constants';
-import { formatModelDisplayName } from './modelGroupManager';
+import { formatModelDisplayName, ModelGroupManager } from './modelGroupManager';
 
 export interface TokenInfo {
     access_token: string;
     refresh_token: string;
     expiry_timestamp: number;
     email: string;
+}
+
+export interface ModelQuota {
+    name: string;
+    displayName: string;
+    percentage: number;
+    reset_time: string;
+    reset_time_raw?: string;
+    has_5h?: boolean;
+    weekly_percentage?: number;
+    has_weekly?: boolean;
+    weekly_reset_time?: string;
+    weekly_reset_time_raw?: string;
+}
+
+export interface QuotaBucket {
+    bucketId: string;
+    window: string;
+    remainingFraction: number;
+    percentage: number;
+    resetTime: string;
+    resetTimeRaw?: string;
+    displayName?: string;
+    description?: string;
+}
+
+export interface QuotaGroup {
+    displayName: string;
+    description?: string;
+    buckets: QuotaBucket[];
 }
 
 export interface Account {
@@ -31,6 +59,10 @@ export interface Account {
     last_used: number;
     disabled: boolean;
     token?: TokenInfo;
+    cached_quota?: {
+        data: any;
+        fetched_at: number;
+    };
 }
 
 export interface AccountSummary {
@@ -189,7 +221,6 @@ export class AccountManager {
 
     /**
      * 启动时的静默对账机制，确保索引与物理文件 100% 同步
-     * (与 loadIndex 自愈形成互补：差距大时信物理文件，差距极小时清木马/死链)
      */
     static reconcileIndexAtStartup(): void {
         try {
@@ -270,6 +301,76 @@ export class AccountManager {
         }
     }
 
+    /**
+     * 调用 retrieveUserQuotaSummary 接口获取 5h 滑动窗口与 weekly 配额分组汇总
+     */
+    static async fetchQuotaSummary(accessToken: string, projectId: string | null = null): Promise<QuotaGroup[] | null> {
+        const payload = projectId ? { project: projectId } : {};
+
+        for (const ep of QUOTA_SUMMARY_ENDPOINTS) {
+            try {
+                const res = await axios.post(ep, payload, {
+                    headers: {
+                        "Authorization": `Bearer ${accessToken}`,
+                        "User-Agent": "Antigravity/4.1.29 (Windows NT 10.0; Win64; x64) Chrome/132.0.6834.160 Electron/39.2.3",
+                        "Accept": "application/json",
+                        "Content-Type": "application/json"
+                    },
+                    timeout: 10000
+                });
+
+                if (res.status === 200 && res.data && Array.isArray(res.data.groups)) {
+                    const groups: QuotaGroup[] = res.data.groups.map((g: any) => ({
+                        displayName: g.displayName || '',
+                        description: g.description || undefined,
+                        buckets: (g.buckets || []).map((b: any) => {
+                            const remainingFraction = typeof b.remainingFraction === 'number' ? b.remainingFraction : 0;
+                            let localResetTime = '';
+                            if (b.resetTime) {
+                                try {
+                                    const resetDate = new Date(b.resetTime);
+                                    localResetTime = resetDate.toLocaleString('vi-VN', {
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        hour12: false
+                                    });
+                                } catch {
+                                    localResetTime = b.resetTime;
+                                }
+                            }
+
+                            return {
+                                bucketId: b.bucketId || '',
+                                window: b.window || '',
+                                remainingFraction,
+                                percentage: Math.round(remainingFraction * 100),
+                                resetTime: localResetTime,
+                                resetTimeRaw: b.resetTime || '',
+                                displayName: b.displayName || undefined,
+                                description: b.description || undefined
+                            };
+                        })
+                    }));
+                    return groups;
+                }
+            } catch (e: any) {
+                const status = e.response?.status;
+                if (status === 401) {
+                    throw e;
+                }
+                if (status === 429 || (status && status >= 500)) {
+                    console.warn(`[Cockpit] QuotaSummary failed at ${ep} with ${status}, trying next...`);
+                    continue;
+                }
+                console.warn(`[Cockpit] QuotaSummary error at ${ep}`, e.message);
+                break;
+            }
+        }
+        return null;
+    }
+
     static async fetchQuota(accessToken: string, projectId: string | null = null) {
         // First fetch project and tier with fallback support
         let finalProjectId = projectId;
@@ -292,7 +393,7 @@ export class AccountManager {
                 if (loadRes.status === 200) {
                     finalProjectId = loadRes.data.cloudaicompanionProject || finalProjectId;
                     tier = (loadRes.data.paidTier && loadRes.data.paidTier.id) || (loadRes.data.currentTier && loadRes.data.currentTier.id);
-                    break; // Success, exit loop
+                    break;
                 }
             } catch (e: any) {
                 const status = e.response?.status;
@@ -304,7 +405,7 @@ export class AccountManager {
                     continue;
                 }
                 console.warn(`[Cockpit] Failed to fetch project info at ${ep}`, e.message);
-                break; // Stop for other errors like 403
+                break;
             }
         }
 
@@ -333,7 +434,7 @@ export class AccountManager {
                 }
                 
                 finalResponse = response;
-                break; // Success, exit loop
+                break;
             } catch (quotaErr: any) {
                 const status = quotaErr.response?.status;
                 const statusText = quotaErr.response?.statusText || '';
@@ -355,13 +456,11 @@ export class AccountManager {
                     tier
                 };
 
-                // Fallback logic: check for 429 or 5xx
                 if (status === 429 || (status && status >= 500)) {
                     console.warn(`[Cockpit] Quota API 429/5xx at ${ep}, falling back to next endpoint...`);
                     continue;
                 }
                 
-                // For other errors (e.g., mismatch, 403), don't fallback, just return error
                 console.warn(`[Cockpit] Quota API error at ${ep}: HTTP ${status || 'N/A'} - ${errMsg}`);
                 return lastError;
             }
@@ -372,7 +471,7 @@ export class AccountManager {
         }
 
         const modelsData = finalResponse.data.models || {};
-        const models: any[] = [];
+        const models: ModelQuota[] = [];
 
         for (const [name, info] of Object.entries(modelsData)) {
             const modelInfo = info as any;
@@ -392,16 +491,7 @@ export class AccountManager {
             }
 
             // Kiểm tra các model thực tế hiển thị trên menu IDE Antigravity
-            const isTargetModel = 
-                lower.includes('3.8') || lower.includes('3-8') ||
-                lower.includes('3.7-flash-medium') ||
-                lower.includes('3.6-flash-medium') ||
-                lower.includes('3.1-pro-low') || (lower.includes('3.1') && lower.includes('pro') && !lower.includes('pro-high')) ||
-                lower.includes('claude-sonnet-4-6') || lower.includes('sonnet 4.6') ||
-                lower.includes('claude-opus-4-6') || lower.includes('opus 4.6') ||
-                lower.includes('gpt-oss-120b') || lower.includes('gpt-oss') ||
-                // Tự động nhận diện model mới nếu có trong tương lai
-                (!lower.includes('2.5') && !lower.includes('2.0') && !lower.includes('1.5') && !lower.includes('3.5') && !lower.includes('3.6') && !lower.includes('3.7') && !lower.includes('3.1') && !lower.includes('gemini-3-flash') && (lower.includes('gemini') || lower.includes('claude') || lower.includes('gpt')));
+            const isTargetModel = IMPORTANT_MODELS.some(kw => lower.includes(kw));
 
             if (!isTargetModel) {
                 continue;
@@ -409,7 +499,6 @@ export class AccountManager {
 
             const quotaInfo = modelInfo.quotaInfo || {};
 
-            // 将 UTC 时间转换为本地时区显示格式
             let localResetTime = '';
             if (quotaInfo.resetTime) {
                 try {
@@ -422,22 +511,96 @@ export class AccountManager {
                         hour12: false
                     });
                 } catch (e) {
-                    localResetTime = quotaInfo.resetTime; // 格式化失败时保留原值
+                    localResetTime = quotaInfo.resetTime;
                 }
             }
 
             models.push({
                 name,
-                displayName: formatModelDisplayName(name),
+                displayName: modelInfo.displayName || formatModelDisplayName(name),
                 percentage: Math.round((quotaInfo.remainingFraction || 0) * 100),
                 reset_time: localResetTime,
-                reset_time_raw: quotaInfo.resetTime || "" // 保留原始 UTC 时间供 tooltip 计算使用
+                reset_time_raw: quotaInfo.resetTime || ""
             });
         }
 
         models.sort((a, b) => a.name.localeCompare(b.name));
 
-        return { is_forbidden: false, models, tier };
+        // Best-effort: 获取分组配额汇总 (5h + weekly)
+        let quotaGroups: QuotaGroup[] | null = null;
+        try {
+            quotaGroups = await AccountManager.fetchQuotaSummary(accessToken, finalProjectId);
+        } catch (e: any) {
+            if (e.response?.status === 401) {
+                throw e;
+            }
+            console.warn('[Cockpit] Failed to fetch quota summary, continuing with basic models', e.message || e);
+        }
+
+        // 模型配额融合 (Fusion Rule)
+        // 将真实 5h 滑动桶与 weekly 周配额桶数据同时融合绑定到对应模型
+        if (quotaGroups && quotaGroups.length > 0) {
+            for (const model of models) {
+                const nameLower = model.name.toLowerCase();
+                const isClaudeOrGpt = nameLower.startsWith('claude') || nameLower.startsWith('gpt') || nameLower.includes('sonnet') || nameLower.includes('opus');
+                const isGemini = nameLower.startsWith('gemini') || nameLower.includes('gemini');
+
+                for (const group of quotaGroups) {
+                    const gname = group.displayName.toLowerCase();
+                    const matchesGroup = isClaudeOrGpt
+                        ? (gname.includes('claude') || gname.includes('gpt') || gname.includes('3p'))
+                        : isGemini
+                            ? (gname.includes('gemini') || (!gname.includes('claude') && !gname.includes('gpt') && !gname.includes('3p')))
+                            : false;
+
+                    if (matchesGroup) {
+                        // 1. 查找 5h 滑动桶
+                        const bucket5h = group.buckets.find(b => {
+                            const win = b.window.toLowerCase();
+                            const bid = b.bucketId.toLowerCase();
+                            return win.includes('5h') || bid.includes('5h') || win.includes('hour') || bid.includes('hour');
+                        });
+
+                        if (bucket5h) {
+                            model.has_5h = true;
+                            model.percentage = bucket5h.percentage;
+                            if (bucket5h.resetTime) {
+                                model.reset_time = bucket5h.resetTime;
+                                model.reset_time_raw = bucket5h.resetTimeRaw;
+                            }
+                        } else {
+                            model.has_5h = false;
+                        }
+
+                        // 2. 查找 weekly 周配额桶
+                        const bucketWeekly = group.buckets.find(b => {
+                            const win = b.window.toLowerCase();
+                            const bid = b.bucketId.toLowerCase();
+                            return win.includes('week') || bid.includes('week');
+                        });
+
+                        if (bucketWeekly) {
+                            model.has_weekly = true;
+                            model.weekly_percentage = bucketWeekly.percentage;
+                            model.weekly_reset_time = bucketWeekly.resetTime;
+                            model.weekly_reset_time_raw = bucketWeekly.resetTimeRaw;
+                        } else {
+                            model.has_weekly = false;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // 自动同步/发现模型分组
+            try {
+                ModelGroupManager.syncDiscoveredGroups(quotaGroups, models.map(m => m.name));
+            } catch (groupSyncErr) {
+                console.warn('[Cockpit] Failed to sync discovered model groups:', groupSyncErr);
+            }
+        }
+
+        return { is_forbidden: false, models, tier, quotaGroups };
     }
 
     // --- 配额缓存层 ---
@@ -466,13 +629,53 @@ export class AccountManager {
 
     /**
      * 仅从缓存中读取配额数据（不发起网络请求）。
-     * 用于 Dashboard 首次打开时快速渲染已有数据，无论是否过期。
-     * 返回 null 表示缓存中没有该 token 的数据。
      */
     static getQuotaFromCache(accessToken: string): any | null {
         const cacheKey = accessToken.substring(0, 32);
         const cached = this._quotaCache.get(cacheKey);
         return cached ? cached.data : null;
+    }
+
+    /**
+     * 获取账号配额（结合内存缓存与磁盘持久化快照）。
+     */
+    static getQuota(account: Account): any | null {
+        if (account.token?.access_token) {
+            const memQuota = this.getQuotaFromCache(account.token.access_token);
+            if (memQuota) {
+                return memQuota;
+            }
+        }
+        if (account.cached_quota?.data) {
+            if (account.token?.access_token) {
+                const cacheKey = account.token.access_token.substring(0, 32);
+                this._quotaCache.set(cacheKey, {
+                    data: account.cached_quota.data,
+                    timestamp: account.cached_quota.fetched_at || Date.now()
+                });
+            }
+            return account.cached_quota.data;
+        }
+        return null;
+    }
+
+    /**
+     * 保存指定账号的最新配额快照到磁盘文件。
+     */
+    static saveAccountQuota(accountId: string, quotaData: any): void {
+        if (!quotaData || quotaData.is_error) {
+            return;
+        }
+        try {
+            const account = this.loadAccount(accountId);
+            account.cached_quota = {
+                data: quotaData,
+                fetched_at: Date.now()
+            };
+            this.saveAccount(account);
+        } catch (e) {
+            console.error(`[Cockpit] Failed to save cached quota for ${accountId}:`, e);
+        }
     }
 
     /** 清除配额缓存。传入 accessToken 时仅清除该账号的缓存，不传则清除全部 */
