@@ -176,7 +176,7 @@ export function getVSCDBPath(overridePath?: string, target: 'all' | 'ide' | 'app
 export const VSCDB_PATH = getVSCDBPath();
 export const CLI_SESSION_PATH = path.join(os.homedir(), '.gemini', 'jetski-standalone-oauth-token');
 
-export const IMPORTANT_MODELS = ["gemini", "claude", "gpt"];
+export const IMPORTANT_MODELS = ["gemini", "claude", "gpt", "argon"];
 export const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 

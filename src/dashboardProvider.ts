@@ -1501,6 +1501,10 @@ export class DashboardProvider {
                         return groupsConfig.groups.map(group => {
                             let minPercentage = 101;
                             let found = false;
+                            const gid = (group.id || '').toLowerCase();
+                            const on = (group.officialName || group.name || '').toLowerCase();
+                            const isArgon = gid.includes('argon') || on.includes('argon');
+
                             if (acc.quota && acc.quota.models) {
                                 (group.models || []).forEach(modelName => {
                                     const m = acc.quota.models.find(x => x.name === modelName);
@@ -1509,6 +1513,21 @@ export class DashboardProvider {
                                         found = true;
                                     }
                                 });
+
+                                // Fallback nếu chưa cấu hình models trong nhóm nhưng có model phù hợp trong quota
+                                if (!found) {
+                                    const matched = acc.quota.models.filter(m => {
+                                        const mn = (m.name || '').toLowerCase();
+                                        if (isArgon) return mn.includes('argon');
+                                        if (gid.includes('claude') || gid.includes('3p')) return mn.includes('claude') || mn.includes('gpt');
+                                        if (gid.includes('gemini')) return mn.includes('gemini') && !mn.includes('argon');
+                                        return false;
+                                    });
+                                    if (matched.length > 0) {
+                                        minPercentage = Math.min(...matched.map(m => m.percentage));
+                                        found = true;
+                                    }
+                                }
                             }
                             return found ? minPercentage : -1;
                         });

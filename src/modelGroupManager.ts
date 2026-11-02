@@ -60,7 +60,13 @@ export function formatModelDisplayName(modelName: string): string {
     }
 
     // Gemini series
-    if (lower.includes('gemini')) {
+    if (lower.includes('gemini') || lower.includes('argon')) {
+        if (lower.includes('argon')) {
+            if (lower.includes('high')) return 'Gemini 4 Argon (High)';
+            if (lower.includes('medium')) return 'Gemini 4 Argon (Medium)';
+            if (lower.includes('low')) return 'Gemini 4 Argon (Low)';
+            return 'Gemini 4 Argon';
+        }
         if (lower.includes('4.0') || lower.includes('4-0') || lower.includes('gemini-4') || lower.includes('gemini 4')) {
             if (lower.includes('pro')) return 'Gemini 4.0 Pro';
             if (lower.includes('ultra')) return 'Gemini 4.0 Ultra';
@@ -464,6 +470,7 @@ export class ModelGroupManager {
 
     static extractSeriesName(modelName: string): string {
         const lower = modelName.toLowerCase();
+        if (lower.includes('argon')) return 'Gemini Argon';
         if (lower.includes('claude')) return 'Claude';
         if (lower.includes('gemini')) return 'Gemini';
         if (lower.includes('gpt')) return 'GPT';
@@ -472,12 +479,26 @@ export class ModelGroupManager {
 
     static autoGroup(models: ModelInfo[]): ModelGroup[] {
         const now = Date.now();
+        const argonModels = models.filter(m => m.name.toLowerCase().includes('argon')).map(m => m.name);
         const claudeModels = models.filter(m => m.name.toLowerCase().includes('claude')).map(m => m.name);
-        const geminiModels = models.filter(m => m.name.toLowerCase().includes('gemini')).map(m => m.name);
+        const geminiModels = models.filter(m => m.name.toLowerCase().includes('gemini') && !m.name.toLowerCase().includes('argon')).map(m => m.name);
         const gptModels = models.filter(m => m.name.toLowerCase().includes('gpt')).map(m => m.name);
-        const otherModels = models.filter(m => !m.name.toLowerCase().includes('claude') && !m.name.toLowerCase().includes('gemini') && !m.name.toLowerCase().includes('gpt')).map(m => m.name);
+        const otherModels = models.filter(m => !m.name.toLowerCase().includes('claude') && !m.name.toLowerCase().includes('gemini') && !m.name.toLowerCase().includes('gpt') && !m.name.toLowerCase().includes('argon')).map(m => m.name);
 
         const groups: ModelGroup[] = [];
+
+        if (argonModels.length > 0) {
+            groups.push({
+                id: 'group_gemini_argon',
+                officialName: 'Gemini Argon',
+                name: 'Gemini Argon',
+                models: argonModels,
+                enabled: true,
+                order: 1,
+                createdAt: now,
+                updatedAt: now
+            });
+        }
 
         if (claudeModels.length > 0) {
             groups.push({
@@ -486,7 +507,7 @@ export class ModelGroupManager {
                 name: 'Claude',
                 models: claudeModels,
                 enabled: true,
-                order: 1,
+                order: groups.length + 1,
                 createdAt: now,
                 updatedAt: now
             });
@@ -499,7 +520,7 @@ export class ModelGroupManager {
                 name: 'Gemini',
                 models: geminiModels,
                 enabled: true,
-                order: 2,
+                order: groups.length + 1,
                 createdAt: now,
                 updatedAt: now
             });
@@ -512,7 +533,7 @@ export class ModelGroupManager {
                 name: 'GPT',
                 models: gptModels,
                 enabled: true,
-                order: 3,
+                order: groups.length + 1,
                 createdAt: now,
                 updatedAt: now
             });
@@ -525,7 +546,7 @@ export class ModelGroupManager {
                 name: 'Khác',
                 models: otherModels,
                 enabled: true,
-                order: 4,
+                order: groups.length + 1,
                 createdAt: now,
                 updatedAt: now
             });

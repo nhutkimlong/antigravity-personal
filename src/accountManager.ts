@@ -542,16 +542,19 @@ export class AccountManager {
         if (quotaGroups && quotaGroups.length > 0) {
             for (const model of models) {
                 const nameLower = model.name.toLowerCase();
-                const isClaudeOrGpt = nameLower.startsWith('claude') || nameLower.startsWith('gpt') || nameLower.includes('sonnet') || nameLower.includes('opus');
-                const isGemini = nameLower.startsWith('gemini') || nameLower.includes('gemini');
+                const isArgon = nameLower.includes('argon');
+                const isClaudeOrGpt = !isArgon && (nameLower.startsWith('claude') || nameLower.startsWith('gpt') || nameLower.includes('sonnet') || nameLower.includes('opus'));
+                const isGemini = !isArgon && (nameLower.startsWith('gemini') || nameLower.includes('gemini'));
 
                 for (const group of quotaGroups) {
                     const gname = group.displayName.toLowerCase();
-                    const matchesGroup = isClaudeOrGpt
-                        ? (gname.includes('claude') || gname.includes('gpt') || gname.includes('3p'))
-                        : isGemini
-                            ? (gname.includes('gemini') || (!gname.includes('claude') && !gname.includes('gpt') && !gname.includes('3p')))
-                            : false;
+                    const matchesGroup = isArgon
+                        ? gname.includes('argon')
+                        : isClaudeOrGpt
+                            ? (gname.includes('claude') || gname.includes('gpt') || gname.includes('3p'))
+                            : isGemini
+                                ? (gname.includes('gemini') && !gname.includes('argon'))
+                                : false;
 
                     if (matchesGroup) {
                         // 1. 查找 5h 滑动桶
@@ -584,10 +587,54 @@ export class AccountManager {
                             model.weekly_percentage = bucketWeekly.percentage;
                             model.weekly_reset_time = bucketWeekly.resetTime;
                             model.weekly_reset_time_raw = bucketWeekly.resetTimeRaw;
+                            // Nếu model không có 5h limit (như Gemini 4 Argon), dùng weekly làm % chính
+                            if (!bucket5h) {
+                                model.percentage = bucketWeekly.percentage;
+                                model.reset_time = bucketWeekly.resetTime;
+                                model.reset_time_raw = bucketWeekly.resetTimeRaw;
+                            }
                         } else {
                             model.has_weekly = false;
                         }
                         break;
+                    }
+                }
+            }
+
+            // Nếu trong quotaGroups có nhóm riêng (như Gemini 4 Argon) nhưng danh sách models chưa có,
+            // tự động tạo model entry tương ứng để hiển thị trên dashboard
+            for (const group of quotaGroups) {
+                const gname = group.displayName.toLowerCase();
+                if (gname.includes('argon')) {
+                    const hasArgonModel = models.some(m => m.name.toLowerCase().includes('argon'));
+                    if (!hasArgonModel) {
+                        const bucket5h = group.buckets.find(b => {
+                            const win = b.window.toLowerCase();
+                            const bid = b.bucketId.toLowerCase();
+                            return win.includes('5h') || bid.includes('5h') || win.includes('hour') || bid.includes('hour');
+                        });
+                        const bucketWeekly = group.buckets.find(b => {
+                            const win = b.window.toLowerCase();
+                            const bid = b.bucketId.toLowerCase();
+                            return win.includes('week') || bid.includes('week');
+                        });
+
+                        const mainPct = bucket5h ? bucket5h.percentage : (bucketWeekly ? bucketWeekly.percentage : 0);
+                        const mainReset = bucket5h ? bucket5h.resetTime : (bucketWeekly ? bucketWeekly.resetTime : '');
+                        const mainResetRaw = bucket5h ? bucket5h.resetTimeRaw : (bucketWeekly ? bucketWeekly.resetTimeRaw : '');
+
+                        models.unshift({
+                            name: 'gemini-4-argon',
+                            displayName: group.displayName || 'Gemini 4 Argon',
+                            percentage: mainPct,
+                            reset_time: mainReset,
+                            reset_time_raw: mainResetRaw,
+                            has_5h: !!bucket5h,
+                            weekly_percentage: bucketWeekly ? bucketWeekly.percentage : undefined,
+                            has_weekly: !!bucketWeekly,
+                            weekly_reset_time: bucketWeekly ? bucketWeekly.resetTime : undefined,
+                            weekly_reset_time_raw: bucketWeekly ? bucketWeekly.resetTimeRaw : undefined
+                        });
                     }
                 }
             }
